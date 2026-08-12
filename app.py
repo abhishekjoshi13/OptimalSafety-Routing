@@ -48,7 +48,11 @@ nodes = list(city_graph.nodes())
 st.sidebar.header("Navigation Parameters")
 start_index = st.sidebar.number_input("Start Node Index", min_value=0, max_value=len(nodes)-1, value=10)
 end_index = st.sidebar.number_input("Destination Node Index", min_value=0, max_value=len(nodes)-1, value=150)
+if "route_generated" not in st.session_state:
+    st.session_state.route_generated = False
 if st.sidebar.button("Generate Routes"):
+    st.session_state.route_generated = True
+if st.session_state.route_generated:
     start_node = nodes[start_index]
     end_node = nodes[end_index]
     fastest_path = nx.shortest_path(city_graph, start_node, end_node, weight="length")
