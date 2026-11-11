@@ -3,6 +3,11 @@ import pandas as pd
 import networkx as nx
 import osmnx as osmx
 
+# --- OSMNX CONFIGURATION FOR STABILITY ---
+osmx.settings.timeout = 300  # API ko data fetch karne ke liye 5 mins ka time do
+osmx.settings.use_cache = True  # Ek baar data aa jaye toh save kar lega
+# ---------------------------------------
+
 def build_dynamic_safety_graph(city_name: str, model_path: str) -> nx.MultiDiGraph:
     """
     Dynamically fetches city road network, extracts CPTED features, 
