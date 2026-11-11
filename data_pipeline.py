@@ -13,8 +13,9 @@ def build_dynamic_safety_graph(city_name: str, model_path: str) -> nx.MultiDiGra
     Dynamically fetches city road network, extracts CPTED features, 
     runs RF inference, and stores metrics for tradeoff analysis.
     """
-    # Fetch graph dynamically via OSM API
-    graph = osmx.graph_from_place(city_name, network_type="walk")
+   # Geocode the central point and fetch graph within a 5km radius (Much faster & optimized)
+    center_point = osmx.geocode(city_name)
+    graph = osmx.graph_from_point(center_point, dist=5000, network_type="walk")
     model = joblib.load(model_path)
     
     edges_data = []
