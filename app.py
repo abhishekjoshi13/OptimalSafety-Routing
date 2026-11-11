@@ -12,32 +12,38 @@ st.set_page_config(page_title="Optimal Safety Routing", layout="wide")
 st.title("Optimal Safety Routing Engine")
 st.subheader("AI-Driven Pedestrian Navigation & CPTED Tradeoff Analytics")
 
-# --- UI State Management ---
+# --- UI State Management (FIXED) ---
 if "city_graph" not in st.session_state:
     st.session_state.city_graph = None
 if "current_city" not in st.session_state:
     st.session_state.current_city = ""
+if "route_generated" not in st.session_state:
+    st.session_state.route_generated = False
 
 # --- Sidebar: Location Parameters ---
 st.sidebar.header("1. Initialize City Region")
 city_input = st.sidebar.text_input("Enter City (e.g., Ranchi, India)", value="Ranchi, India")
 
 if st.sidebar.button("Load City Graph"):
-    with st.spinner(f"Fetching mapping data for {city_input} and running ML inference... (This may take 1-3 minutes)"):
+    with st.spinner(f"Fetching mapping data for {city_input} and running ML inference... (This may take 1-3 mins)"):
         try:
             st.session_state.city_graph = build_dynamic_safety_graph(city_input, "safety_model.joblib")
             st.session_state.current_city = city_input
+            st.session_state.route_generated = False # Reset map when new city loads
             st.sidebar.success(f"{city_input} loaded and optimized!")
         except Exception as e:
-            
             st.sidebar.error(f"Failed to fetch city. Error Details: {str(e)}")
+
 st.sidebar.markdown("---")
 st.sidebar.header("2. Navigation Points")
 start_input = st.sidebar.text_input("Start Location (e.g., BIT Mesra)")
 end_input = st.sidebar.text_input("Destination (e.g., Lalpur)")
 
-# --- Routing Execution ---
+# --- Routing Execution (STATE PERSISTENCE ADDED) ---
 if st.sidebar.button("Generate Secure Route"):
+    st.session_state.route_generated = True
+
+if st.session_state.route_generated:
     if st.session_state.city_graph is None:
         st.warning("Please load a city graph first from the sidebar.")
         st.stop()
@@ -104,8 +110,14 @@ if st.sidebar.button("Generate Secure Route"):
         
     except ValidationError:
         st.error("Invalid text input. Please enter valid locations.")
+    except nx.NetworkXNoPath:
+        st.error("Routing failed: No walkable path found between these two locations.")
     except Exception as e:
-        st.error(f"Routing failed: Please ensure locations are specific to {st.session_state.current_city}.")
+        st.error(f"Routing Error: {str(e)}. Please ensure the locations exist within {st.session_state.current_city}.")
 
 st.markdown("---")
 st.caption("Legal Disclaimer: AI predictions are based on physical infrastructure data. Users must exercise personal judgment.")
+            
+         
+       
+        
