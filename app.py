@@ -5,6 +5,7 @@ import folium
 from streamlit_folium import st_folium
 from pydantic import ValidationError
 
+# Correctly importing the updated function names
 from data_pipeline import build_dynamic_safety_graph, extract_path_metrics
 from schemas import LocationQuerySchema
 
@@ -12,7 +13,6 @@ st.set_page_config(page_title="Optimal Safety Routing", layout="wide")
 st.title("Optimal Safety Routing Engine")
 st.subheader("AI-Driven Pedestrian Navigation & CPTED Tradeoff Analytics")
 
-# --- UI State Management (FIXED) ---
 if "city_graph" not in st.session_state:
     st.session_state.city_graph = None
 if "current_city" not in st.session_state:
@@ -20,26 +20,24 @@ if "current_city" not in st.session_state:
 if "route_generated" not in st.session_state:
     st.session_state.route_generated = False
 
-# --- Sidebar: Location Parameters ---
 st.sidebar.header("1. Initialize City Region")
-city_input = st.sidebar.text_input("Enter City (e.g., Ranchi, India)", value="Ranchi, India")
+city_input = st.sidebar.text_input("Enter City Area (e.g., Lalpur, Ranchi)", value="Lalpur, Ranchi")
 
-if st.sidebar.button("Load City Graph"):
-    with st.spinner(f"Fetching mapping data for {city_input} and running ML inference... (This may take 1-3 mins)"):
+if st.sidebar.button("Load Graph (1.5km Radius)"):
+    with st.spinner(f"Fetching mapping data for {city_input} and running ML inference..."):
         try:
             st.session_state.city_graph = build_dynamic_safety_graph(city_input, "safety_model.joblib")
             st.session_state.current_city = city_input
-            st.session_state.route_generated = False # Reset map when new city loads
+            st.session_state.route_generated = False 
             st.sidebar.success(f"{city_input} loaded and optimized!")
         except Exception as e:
-            st.sidebar.error(f"Failed to fetch city. Error Details: {str(e)}")
+            st.sidebar.error(f"Failed to fetch area. Error Details: {str(e)}")
 
 st.sidebar.markdown("---")
 st.sidebar.header("2. Navigation Points")
-start_input = st.sidebar.text_input("Start Location (e.g., BIT Mesra)")
-end_input = st.sidebar.text_input("Destination (e.g., Lalpur)")
+start_input = st.sidebar.text_input("Start Location (e.g., Nucleus Mall)")
+end_input = st.sidebar.text_input("Destination (e.g., Lalpur Chowk)")
 
-# --- Routing Execution (STATE PERSISTENCE ADDED) ---
 if st.sidebar.button("Generate Secure Route"):
     st.session_state.route_generated = True
 
@@ -49,7 +47,6 @@ if st.session_state.route_generated:
         st.stop()
         
     try:
-        # 1. Input Validation
         query = LocationQuerySchema(
             city_name=st.session_state.current_city,
             start_address=start_input,
@@ -57,24 +54,19 @@ if st.session_state.route_generated:
         )
         
         with st.spinner("Geocoding addresses to coordinates..."):
-            # 2. Geocoding (Text to Lat/Lng)
             start_coords = osmx.geocode(f"{query.start_address}, {query.city_name}")
             end_coords = osmx.geocode(f"{query.end_address}, {query.city_name}")
             
-            # 3. Find Nearest Graph Nodes
             start_node = osmx.distance.nearest_nodes(st.session_state.city_graph, X=start_coords[1], Y=start_coords[0])
             end_node = osmx.distance.nearest_nodes(st.session_state.city_graph, X=end_coords[1], Y=end_coords[0])
             
         with st.spinner("Calculating optimal paths via Dijkstra..."):
-            # 4. Pathfinding
             fastest_path = nx.shortest_path(st.session_state.city_graph, start_node, end_node, weight="length")
             safest_path = nx.shortest_path(st.session_state.city_graph, start_node, end_node, weight="safety_cost")
             
-            # 5. Extract Analytics
             fast_metrics = extract_path_metrics(st.session_state.city_graph, fastest_path)
             safe_metrics = extract_path_metrics(st.session_state.city_graph, safest_path)
             
-        # --- UI Rendering: Tradeoff Analytics ---
         st.markdown("### Route Trade-off Analysis")
         col1, col2, col3 = st.columns(3)
         
@@ -92,17 +84,14 @@ if st.session_state.route_generated:
             st.metric("High-Risk Segments", f"{safe_metrics['high_risk_count']}", 
                       delta=f"{risk_diff} vs Shortest", delta_color="inverse")
             
-        # Justification Text
-        st.info(f"**Analytics Engine Recommendation:** The AI recommends the Safe Route. Although it adds **{dist_diff:.1f} meters** to your walk, it completely avoids/reduces High-Risk unlit zones by **{abs(risk_diff)} segments** and improves overall visibility by **{abs(lux_diff):.1f} Lux**, aligning with optimal CPTED safety standards.")
+        st.info(f"**Analytics Engine Recommendation:** The AI recommends the Safe Route. Although it adds **{dist_diff:.1f} meters** to your walk, it avoids/reduces High-Risk zones by **{abs(risk_diff)} segments** and improves overall visibility by **{abs(lux_diff):.1f} Lux**, aligning with optimal CPTED safety standards.")
 
-        # --- Interactive Map Generation ---
         fastest_edges = osmx.routing.route_to_gdf(st.session_state.city_graph, fastest_path, weight="length")
         safest_edges = osmx.routing.route_to_gdf(st.session_state.city_graph, safest_path, weight="safety_cost")
         
         route_map = fastest_edges.explore(color="red", style_kwds={"weight": 4, "opacity": 0.6}, name="Shortest Path")
         route_map = safest_edges.explore(m=route_map, color="green", style_kwds={"weight": 6, "opacity": 0.9}, name="Safest Path")
         
-        # Add G-Maps style Origin and Destination Markers
         folium.Marker(location=start_coords, popup="Origin", icon=folium.Icon(color="blue", icon="play")).add_to(route_map)
         folium.Marker(location=end_coords, popup="Destination", icon=folium.Icon(color="red", icon="stop")).add_to(route_map)
         
@@ -117,7 +106,6 @@ if st.session_state.route_generated:
 
 st.markdown("---")
 st.caption("Legal Disclaimer: AI predictions are based on physical infrastructure data. Users must exercise personal judgment.")
-            
-         
+
        
         
