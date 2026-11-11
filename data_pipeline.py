@@ -15,7 +15,7 @@ def build_dynamic_safety_graph(city_name: str, model_path: str) -> nx.MultiDiGra
     """
    # Geocode the central point and fetch graph within a 5km radius (Much faster & optimized)
     center_point = osmx.geocode(city_name)
-    graph = osmx.graph_from_point(center_point, dist=5000, network_type="walk")
+    graph = osmx.graph_from_point(center_point, dist=1500, network_type="walk")
     model = joblib.load(model_path)
     
     edges_data = []
