@@ -23,14 +23,14 @@ st.sidebar.header("1. Initialize City Region")
 city_input = st.sidebar.text_input("Enter City (e.g., Ranchi, India)", value="Ranchi, India")
 
 if st.sidebar.button("Load City Graph"):
-    with st.spinner(f"Fetching mapping data for {city_input} and running ML inference..."):
+    with st.spinner(f"Fetching mapping data for {city_input} and running ML inference... (This may take 1-3 minutes)"):
         try:
             st.session_state.city_graph = build_dynamic_safety_graph(city_input, "safety_model.joblib")
             st.session_state.current_city = city_input
             st.sidebar.success(f"{city_input} loaded and optimized!")
         except Exception as e:
-            st.sidebar.error("Failed to fetch city. Please check spelling or network.")
-
+            
+            st.sidebar.error(f"Failed to fetch city. Error Details: {str(e)}")
 st.sidebar.markdown("---")
 st.sidebar.header("2. Navigation Points")
 start_input = st.sidebar.text_input("Start Location (e.g., BIT Mesra)")
