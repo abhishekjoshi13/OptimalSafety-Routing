@@ -1,6 +1,6 @@
 # Optimal Safety Routing Engine
 
-Live Demo: [https://optimalsafety-routing-wsow5uyairz4fqjrojwmzn.streamlit.app/](https://optimalsafety-routing-wsow5uyairz4fqjrojwmzn.streamlit.app/)
+Live Demo: [https://optimalsafety-routing-9cgrcknqxxsgyy5nrnheqf.streamlit.app/](https://optimalsafety-routing-9cgrcknqxxsgyy5nrnheqf.streamlit.app/)
 
 ## Overview
 Standard navigation applications optimize strictly for distance or travel time. However, for pedestrians navigating an urban environment, the shortest path is not always the safest. This project is a hybrid geospatial and machine learning routing engine that balances travel distance with environmental safety metrics.
