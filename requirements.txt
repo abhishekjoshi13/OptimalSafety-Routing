@@ -10,3 +10,4 @@ numpy
 geopandas
 mapclassify
 matplotlib
+pydantic
