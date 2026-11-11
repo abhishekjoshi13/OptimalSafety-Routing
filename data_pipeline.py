@@ -4,16 +4,16 @@ import networkx as nx
 import osmnx as osmx
 
 # --- OSMNX CONFIGURATION FOR STABILITY ---
-osmx.settings.timeout = 300  # API ko data fetch karne ke liye 5 mins ka time do
-osmx.settings.use_cache = True  # Ek baar data aa jaye toh save kar lega
+osmx.settings.timeout = 300  
+osmx.settings.use_cache = True  
 # ---------------------------------------
 
 def build_dynamic_safety_graph(city_name: str, model_path: str) -> nx.MultiDiGraph:
     """
-    Dynamically fetches city road network, extracts CPTED features, 
+    Dynamically fetches city road network within a 1.5km radius, extracts CPTED features, 
     runs RF inference, and stores metrics for tradeoff analysis.
     """
-   # Geocode the central point and fetch graph within a 5km radius (Much faster & optimized)
+    # Optimized: Geocode the central point and fetch a 1.5km radius to prevent Memory Crash
     center_point = osmx.geocode(city_name)
     graph = osmx.graph_from_point(center_point, dist=1500, network_type="walk")
     model = joblib.load(model_path)
@@ -21,7 +21,6 @@ def build_dynamic_safety_graph(city_name: str, model_path: str) -> nx.MultiDiGra
     edges_data = []
     edges_order = []
     
-    # Feature extraction (CPTED Heuristics)
     for u, v, k, edge_attr in graph.edges(keys=True, data=True):
         road_length = float(edge_attr.get("length", 100.0))
         highway = str(edge_attr.get("highway", "unclassified"))
@@ -43,11 +42,9 @@ def build_dynamic_safety_graph(city_name: str, model_path: str) -> nx.MultiDiGra
         })
         edges_order.append((u, v, k))
         
-    # Batch ML inference
     features_df = pd.DataFrame(edges_data)
     predictions = model.predict(features_df)
     
-    # Apply dynamic risk penalties and store metrics for UI Analysis
     for i, (u, v, k) in enumerate(edges_order):
         prediction = predictions[i]
         multiplier = 1.0
@@ -59,8 +56,6 @@ def build_dynamic_safety_graph(city_name: str, model_path: str) -> nx.MultiDiGra
             
         graph[u][v][k]["safety_cost"] = edges_data[i]["length"] * multiplier
         graph[u][v][k]["risk_class"] = prediction
-        
-        # Saving raw features for the Tradeoff Analytics Engine
         graph[u][v][k]["lux_level"] = edges_data[i]["luxLevel"]
         graph[u][v][k]["police_dist"] = edges_data[i]["policeDist"]
         
@@ -77,7 +72,7 @@ def extract_path_metrics(graph: nx.MultiDiGraph, path: list) -> dict:
         edge = graph[u][v][0]
         total_dist += edge["length"]
         total_lux += edge["lux_level"]
-        if edge["risk_class"] == "High Risk":
+        if edge.get("risk_class") == "High Risk":
             high_risk_segments += 1
         edge_count += 1
         
@@ -88,5 +83,4 @@ def extract_path_metrics(graph: nx.MultiDiGraph, path: list) -> dict:
         "high_risk_count": high_risk_segments,
         "avg_lux": avg_lux
     }
-       
-       
+     
