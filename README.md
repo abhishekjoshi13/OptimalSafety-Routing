@@ -172,6 +172,9 @@ Current limitations include:
 - Geocoding and OpenStreetMap data availability can affect route generation.
 - The model-based route is an experimental estimate, not a guarantee of safety.
 
+**Important model limitation:** The model was trained using synthetically generated feature values and incident labels based on predefined probabilistic assumptions. Its recorded test accuracy and F1 score measure performance on a synthetic held-out dataset, not real-world crime prediction performance. The runtime pipeline also derives deterministic proxy features from road classifications, which may differ from the randomized feature distributions used during training. Therefore, model outputs should be treated as experimental estimates rather than validated real-world safety assessments.
+
+
 Potential future improvements include:
 
 - Integrating verified street-lighting and pedestrian-activity datasets.
