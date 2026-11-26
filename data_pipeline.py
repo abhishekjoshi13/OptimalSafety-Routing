@@ -11,6 +11,15 @@ import osmnx as osmx
 osmx.settings.timeout = 300
 osmx.settings.use_cache = True
 
+osmx.settings.overpass_url = (
+    "https://overpass.private.coffee/api"
+)
+
+osmx.settings.http_user_agent = (
+    "OptimalSafetyRouting/1.0 "
+    "(https://github.com/abhishekjoshi13/OptimalSafety-Routing)"
+)
+
 
 FEATURE_COLUMNS = [
     "length",
@@ -97,7 +106,9 @@ def build_dynamic_safety_graph(
         raise ValueError("A valid model file path is required")
 
     if not os.path.isfile(model_path):
-        raise FileNotFoundError("The configured safety model was not found")
+        raise FileNotFoundError(
+            "The configured safety model was not found"
+        )
 
     center_point = osmx.geocode(city_name.strip())
 
@@ -105,7 +116,9 @@ def build_dynamic_safety_graph(
         not isinstance(center_point, (tuple, list))
         or len(center_point) != 2
     ):
-        raise ValueError("Geocoding did not return valid coordinates")
+        raise ValueError(
+            "Geocoding did not return valid coordinates"
+        )
 
     latitude, longitude = center_point
 
@@ -115,7 +128,9 @@ def build_dynamic_safety_graph(
         and -90 <= latitude <= 90
         and -180 <= longitude <= 180
     ):
-        raise ValueError("Geocoding returned out-of-range coordinates")
+        raise ValueError(
+            "Geocoding returned out-of-range coordinates"
+        )
 
     graph = osmx.graph_from_point(
         center_point,
@@ -124,13 +139,15 @@ def build_dynamic_safety_graph(
     )
 
     if graph is None or graph.number_of_nodes() == 0:
-        raise ValueError("No walkable road network was found for this area")
+        raise ValueError(
+            "No walkable road network was found for this area"
+        )
 
     if graph.number_of_edges() == 0:
-        raise ValueError("The downloaded road network contains no edges")
+        raise ValueError(
+            "The downloaded road network contains no edges"
+        )
 
-    # Only load model artifacts that are trusted and controlled
-    # by the project owner. Joblib files can execute code on loading.
     model = joblib.load(model_path)
 
     edges_data = []
@@ -206,10 +223,14 @@ def extract_path_metrics(
         )
 
     if graph is None or not isinstance(graph, nx.MultiDiGraph):
-        raise TypeError("A NetworkX MultiDiGraph is required")
+        raise TypeError(
+            "A NetworkX MultiDiGraph is required"
+        )
 
     if not isinstance(path, (list, tuple)) or len(path) < 1:
-        raise ValueError("A non-empty route path is required")
+        raise ValueError(
+            "A non-empty route path is required"
+        )
 
     total_dist = 0.0
     total_safety_cost = 0.0
@@ -225,8 +246,6 @@ def extract_path_metrics(
 
         parallel_edges = graph[u][v]
 
-        # NetworkX's default MultiGraph weight handling selects
-        # the minimum weight among parallel edges.
         selected_key, selected_edge = min(
             parallel_edges.items(),
             key=lambda item: float(
@@ -234,11 +253,17 @@ def extract_path_metrics(
             )
         )
 
-        edge_length = float(selected_edge.get("length", 0.0))
+        edge_length = float(
+            selected_edge.get("length", 0.0)
+        )
+
         edge_safety_cost = float(
             selected_edge.get("safety_cost", 0.0)
         )
-        edge_lux = float(selected_edge.get("lux_level", 0.0))
+
+        edge_lux = float(
+            selected_edge.get("lux_level", 0.0)
+        )
 
         if not all(
             math.isfinite(value) and value >= 0
@@ -248,7 +273,9 @@ def extract_path_metrics(
                 edge_lux
             )
         ):
-            raise ValueError("Route contains invalid edge metrics")
+            raise ValueError(
+                "Route contains invalid edge metrics"
+            )
 
         total_dist += edge_length
         total_safety_cost += edge_safety_cost
@@ -272,3 +299,6 @@ def extract_path_metrics(
         "avg_lux": average_lux,
         "edge_count": edge_count
     }
+
+ 
+ 
