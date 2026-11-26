@@ -1,5 +1,5 @@
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class LocationQuerySchema(BaseModel):
@@ -28,15 +28,16 @@ class LocationQuerySchema(BaseModel):
         description="Destination location"
     )
 
-    @validator(
+    @field_validator(
         "city_name",
         "start_address",
         "end_address",
-        pre=True
+        mode="before"
     )
+    @classmethod
     def normalize_location_text(cls, value):
         if not isinstance(value, str):
-            raise TypeError("Location input must be a string")
+            raise ValueError("Location input must be a string")
 
         value = value.strip()
 
@@ -44,6 +45,3 @@ class LocationQuerySchema(BaseModel):
             raise ValueError("Location input cannot be empty")
 
         return value
-
-    class Config:
-        anystr_strip_whitespace = True
