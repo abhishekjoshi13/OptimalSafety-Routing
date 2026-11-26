@@ -605,6 +605,7 @@ def test_snap_location_to_graph_handles_lookup_failure(
 # Route calculation tests
 
 
+
 def test_calculate_routes_finds_different_optimal_paths():
     graph = create_test_graph()
 
@@ -614,14 +615,15 @@ def test_calculate_routes_finds_different_optimal_paths():
         3,
     )
 
-    assert result["shortest_path"] == [1, 3]
-    assert result["safety_path"] == [1, 2, 3]
+    assert result["shortest_path"] == [1, 2, 3]
+    assert result["safety_path"] == [1, 3]
 
-    assert result["shortest_metrics"]["distance"] == 300.0
-    assert result["shortest_metrics"]["safety_cost"] == 100.0
+    assert result["shortest_metrics"]["distance"] == 200.0
+    assert result["shortest_metrics"]["safety_cost"] == 1000.0
 
-    assert result["safety_metrics"]["distance"] == 200.0
-    assert result["safety_metrics"]["safety_cost"] == 1000.0
+    assert result["safety_metrics"]["distance"] == 300.0
+    assert result["safety_metrics"]["safety_cost"] == 100.0
+
 
 
 def test_calculate_routes_rejects_missing_path():
