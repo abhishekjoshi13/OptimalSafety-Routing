@@ -1,7 +1,7 @@
 
 # Optimal Safety Routing Engine
 
-An experimental geospatial routing application that compares the shortest pedestrian route with a model-weighted alternative using OpenStreetMap road-network data and machine-learning risk classifications.
+An experimental geospatial pedestrian-routing application that compares the shortest route with a model-weighted alternative using OpenStreetMap road-network data and machine-learning risk classifications.
 
 ## Live Demo
 
@@ -9,18 +9,22 @@ An experimental geospatial routing application that compares the shortest pedest
 
 ## Project Overview
 
-Conventional navigation generally prioritizes distance or travel time. This project explores a different question:
+Conventional navigation generally prioritizes distance or travel time.
 
-**Can a pedestrian route be evaluated using both distance and estimated environmental risk?**
+This project explores another question:
 
-The application downloads a walkable street network around a selected area, assigns model-predicted risk categories to road segments, and compares:
+**Can pedestrian routes be compared using both distance and estimated environmental risk?**
 
-- **Shortest Route:** Minimizes road-network distance.
-- **Safety-Weighted Route:** Minimizes a weighted cost that penalizes segments classified as higher risk.
+The application:
 
-The result is a route comparison with distance, risk-segment counts, proxy lighting values, and an interactive map.
+1. Retrieves a walkable street network around a selected area.
+2. Generates road-segment features.
+3. Predicts risk categories using a trained machine-learning model.
+4. Assigns risk-weighted costs to road segments.
+5. Calculates shortest and safety-weighted routes.
+6. Displays route metrics and an interactive map.
 
-This is an experimental decision-support tool. It does not guarantee personal safety or replace local knowledge and judgment.
+The application is an experimental decision-support tool. It does not guarantee personal safety or replace local knowledge and judgment.
 
 ## Technical Stack
 
@@ -30,31 +34,33 @@ This is an experimental decision-support tool. It does not guarantee personal sa
 | Street-network data | OpenStreetMap |
 | Geospatial network extraction | OSMnx |
 | Graph representation and routing | NetworkX |
-| Machine learning inference | Scikit-learn |
+| Machine learning | Scikit-learn |
 | Data processing | Pandas, NumPy |
 | Interactive maps | Folium, GeoPandas, Streamlit-Folium |
 | Input validation | Pydantic |
 | Model serialization | Joblib |
+| Automated testing | Pytest |
+| Continuous integration | GitHub Actions |
 
 ## How It Works
 
 ### 1. Location Input and Validation
 
-The user provides a city or area, a starting location, and a destination.
+Users provide a city or area, a starting location and a destination.
 
-Pydantic validates and normalizes the location strings, including whitespace trimming and length constraints.
+Pydantic validates and normalizes the input strings. OSMnx geocodes the locations into geographic coordinates.
 
-OSMnx geocodes the locations into geographic coordinates. The application validates returned coordinates before using them to identify nearby graph nodes.
+The application validates the returned coordinates before attempting to match them to the road network.
 
 ### 2. Walkable Network Extraction
 
-The data pipeline geocodes the selected city or area and requests a walkable OpenStreetMap network within a 1,500-metre radius.
+The data pipeline retrieves a walkable OpenStreetMap network within a 1,500-metre radius around the selected area.
 
-The resulting road network is represented as a NetworkX directed multigraph.
+The resulting network is represented as a NetworkX directed multigraph.
 
 ### 3. Feature Engineering and Risk Prediction
 
-For each road segment, the pipeline constructs the feature columns expected by the trained model:
+The application generates six model input features:
 
 - Road length
 - Lane count
@@ -63,15 +69,13 @@ For each road segment, the pipeline constructs the feature columns expected by t
 - Commercial-activity proxy
 - Police-distance proxy
 
-The current implementation derives these proxy values from OpenStreetMap road classifications using fixed rule-based assignments.
+The saved Scikit-learn model (`safety_model.joblib`) predicts a risk category for each road segment.
 
-The saved Scikit-learn model (`safety_model.joblib`) predicts a risk category for each segment.
-
-**Important limitation:** These proxy values are not live measurements of illumination, pedestrian volume, shop density, or police-station distance. Their quality depends on the assumptions used to construct the features and train the model.
+**Important limitation:** The current lighting, pedestrian-traffic, shop-count and police-distance values are rule-based proxies derived from road classifications. They are not live measurements.
 
 ### 4. Risk-Weighted Graph Construction
 
-The predicted risk category is converted into a multiplier:
+The predicted category is converted into a cost multiplier:
 
 | Predicted category | Cost multiplier |
 |---|---:|
@@ -79,44 +83,49 @@ The predicted risk category is converted into a multiplier:
 | Moderate | 2.5 |
 | High Risk | 6.0 |
 
-The pipeline calculates:
+The application calculates:
 
 `Safety Cost = Road Length × Risk Multiplier`
 
-Each road segment receives a `safety_cost` attribute, which is used by the routing algorithm.
+Each road segment receives a `safety_cost` attribute.
 
 ### 5. Route Optimization
 
-NetworkX computes two routes between the selected graph nodes:
+NetworkX calculates two routes:
 
-- Shortest route using `length` as the edge weight.
-- Safety-weighted route using `safety_cost` as the edge weight.
+- **Shortest Route:** Minimizes total road-network distance using `length`.
+- **Safety-Weighted Route:** Minimizes total model-based cost using `safety_cost`.
 
-The application then calculates route metrics using the edge selected by the corresponding routing weight, including total distance, average lighting proxy, and high-risk segment count.
+The application calculates route distance, safety cost, average lighting proxy and high-risk segment count.
 
-### 6. Trade-off Analysis and Visualization
+### 6. Visualization
 
-The interface compares the two routes and displays:
-
-- Safety-weighted route distance
-- Difference in distance compared with the shortest route
-- Average lighting proxy
-- Difference in high-risk segment counts
-
-Folium visualizes the shortest route and safety-weighted route with separate map layers.
+The Streamlit interface displays route comparisons and an interactive Folium map with separate layers for the two routes.
 
 ## Repository Structure
 
 ```text
 OptimalSafety-Routing/
 │
+├── .github/
+│   └── workflows/
+│       └── tests.yml
+│
+├── tests/
+│   └── test_routing.py
+│
 ├── app.py
 ├── data_pipeline.py
+├── routing_helpers.py
 ├── schemas.py
+│
 ├── safety_model.joblib
 ├── city_map.graphml.gz
 ├── OptimalSafety_Routing.ipynb
+│
 ├── requirements.txt
+├── requirements-dev.txt
+├── requirements-lock.txt
 └── README.md
 ```
 
@@ -124,7 +133,7 @@ OptimalSafety-Routing/
 
 ### Prerequisites
 
-- Python 3.10 or a compatible Python version for the installed dependencies
+- Python 3.11
 - pip
 - Internet connectivity for OpenStreetMap geocoding and network retrieval
 
@@ -137,7 +146,7 @@ git clone https://github.com/abhishekjoshi13/OptimalSafety-Routing.git
 cd OptimalSafety-Routing
 ```
 
-Install dependencies:
+Install application dependencies:
 
 ```bash
 pip install -r requirements.txt
@@ -149,42 +158,73 @@ Run the application:
 streamlit run app.py
 ```
 
-Open the local URL displayed by Streamlit in your browser.
+Open the local URL displayed by Streamlit.
+
+## Testing
+
+The project uses Pytest for automated testing.
+
+Install the development dependencies:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+Run the test suite:
+
+```bash
+pytest -v
+```
+
+The development requirements use `requirements-lock.txt` to reproduce the dependency versions used by the CI environment.
+
+### Automated CI
+
+GitHub Actions runs the automated test suite on pushes and pull requests targeting `main`.
+
+The workflow:
+
+1. Checks out the repository.
+2. Sets up Python 3.11.
+3. Installs locked development dependencies.
+4. Executes `pytest -v`.
+
+The current verified baseline contains 47 passing test cases.
 
 ## Model and Data Considerations
 
 The application loads `safety_model.joblib` using Joblib.
 
-Only load model artifacts from trusted sources. Joblib uses Python serialization mechanisms and loading an untrusted artifact can execute malicious code.
+Only load model artifacts from trusted sources. Joblib uses Python serialization mechanisms, and loading an untrusted artifact can execute malicious code.
 
-The application retrieves street-network information dynamically through OSMnx. Availability and completeness depend on OpenStreetMap coverage, network access, and geocoding results.
+The application retrieves street-network information dynamically through OSMnx. Data availability depends on OpenStreetMap coverage, network access and geocoding results.
 
-The repository also contains a GraphML network file and a Jupyter notebook. The Streamlit application currently builds its graph dynamically rather than loading the GraphML file as its primary graph source.
+The repository also contains a GraphML network file and a Jupyter notebook. The current Streamlit application builds its road graph dynamically rather than using the GraphML file as its primary graph source.
 
-## Limitations and Future Improvements
+## Limitations
 
-Current limitations include:
+- CPTED feature values are rule-based proxies, not verified real-world measurements.
+- The model was trained using synthetic feature values and incident labels generated from predefined assumptions.
+- Recorded test accuracy and F1 scores measure performance on a synthetic held-out dataset, not real-world crime prediction performance.
+- Runtime proxy features may differ from the randomized feature distributions used during model training.
+- The application does not establish that predicted risk categories correspond to actual crime incidence.
+- A 1,500-metre extraction radius may not cover every requested start and destination.
+- Geocoding and OpenStreetMap coverage can affect route generation.
+- The 250-metre snapping threshold is an application-level configuration, not a guarantee that a location is correctly represented.
 
-- CPTED feature values are rule-based proxies rather than verified real-world measurements.
-- The quality of model predictions depends on the training data and feature assumptions.
-- The application does not establish that a predicted risk category corresponds to actual crime incidence.
-- A 1,500-metre network extraction radius may not cover every requested start and destination.
-- Geocoding and OpenStreetMap data availability can affect route generation.
-- The model-based route is an experimental estimate, not a guarantee of safety.
+Model outputs should therefore be treated as experimental estimates, not validated real-world safety assessments.
 
-**Important model limitation:** The model was trained using synthetically generated feature values and incident labels based on predefined probabilistic assumptions. Its recorded test accuracy and F1 score measure performance on a synthetic held-out dataset, not real-world crime prediction performance. The runtime pipeline also derives deterministic proxy features from road classifications, which may differ from the randomized feature distributions used during training. Therefore, model outputs should be treated as experimental estimates rather than validated real-world safety assessments.
-
-
-Potential future improvements include:
+## Potential Future Improvements
 
 - Integrating verified street-lighting and pedestrian-activity datasets.
 - Using reliable, geographically representative training data.
-- Evaluating model performance with documented metrics and independent test data.
-- Adding automated tests for feature generation, graph construction, routing, and metric calculations.
-- Improving route coverage and handling locations outside the downloaded network.
+- Evaluating model performance using independent real-world datasets.
+- Improving route coverage and network retrieval strategies.
+- Adding further application-level integration tests.
+- Evaluating alternative risk-weighting strategies.
 
 ## Disclaimer
 
-This project is an educational and experimental geospatial machine-learning application. Its predictions and route recommendations are estimates based on available map data and model assumptions. Users should exercise independent judgment when choosing a route.
+This project is an educational and experimental geospatial machine-learning application.
 
-   ```
+Its predictions and route recommendations are estimates based on available map data and model assumptions. They do not guarantee personal safety. Users should exercise independent judgment when choosing a route.
