@@ -1,17 +1,36 @@
 
+import math
+from pathlib import Path
+
+import joblib
 import networkx as nx
 import pandas as pd
 import pytest
 from pydantic import ValidationError
 
 import data_pipeline
+import routing_helpers
+
 from data_pipeline import (
     FEATURE_COLUMNS,
     _build_cpted_features,
     build_dynamic_safety_graph,
     extract_path_metrics,
 )
+
 from schemas import LocationQuerySchema
+
+from routing_helpers import (
+    MAX_SNAP_DISTANCE_METERS,
+    LocationOutsideGraphError,
+    LocationTooFarFromRoadError,
+    calculate_routes,
+    get_graph_bounds,
+    haversine_distance,
+    snap_location_to_graph,
+    validate_coordinates,
+    validate_location_in_graph,
+)
 
 
 class FakeModel:
@@ -22,6 +41,43 @@ class FakeModel:
     def predict(self, features):
         self.received_features = features
         return self.predictions
+
+
+def create_test_graph():
+    graph = nx.MultiDiGraph()
+
+    graph.add_node(1, x=85.3000, y=23.3000)
+    graph.add_node(2, x=85.3010, y=23.3000)
+    graph.add_node(3, x=85.3020, y=23.3000)
+
+    graph.add_edge(
+        1,
+        2,
+        length=100.0,
+        safety_cost=500.0,
+        lux_level=15.0,
+        risk_class="High Risk",
+    )
+
+    graph.add_edge(
+        2,
+        3,
+        length=100.0,
+        safety_cost=500.0,
+        lux_level=15.0,
+        risk_class="High Risk",
+    )
+
+    graph.add_edge(
+        1,
+        3,
+        length=300.0,
+        safety_cost=100.0,
+        lux_level=85.0,
+        risk_class="Safe",
+    )
+
+    return graph
 
 
 def test_location_schema_strips_whitespace():
@@ -286,10 +342,306 @@ def test_route_metrics_reject_missing_path_edge():
             route_weight="length",
         )
 
-def test_real_safety_model_artifact_loads_and_predicts():
-    from pathlib import Path
-    import joblib
 
+# Coordinate validation tests
+
+
+@pytest.mark.parametrize(
+    "coords, expected",
+    [
+        ((23.3, 85.3), (23.3, 85.3)),
+        ([0, 0], (0.0, 0.0)),
+        ((90, 180), (90.0, 180.0)),
+        ((-90, -180), (-90.0, -180.0)),
+    ],
+)
+def test_validate_coordinates_accepts_valid_values(coords, expected):
+    assert validate_coordinates(coords) == expected
+
+
+@pytest.mark.parametrize(
+    "coords",
+    [
+        None,
+        "23.3,85.3",
+        (23.3,),
+        (23.3, 85.3, 10),
+        ("23.3", 85.3),
+        (True, 85.3),
+        (23.3, False),
+        (float("nan"), 85.3),
+        (23.3, float("inf")),
+        (91, 85.3),
+        (23.3, 181),
+    ],
+)
+def test_validate_coordinates_rejects_invalid_values(coords):
+    with pytest.raises(ValueError):
+        validate_coordinates(coords)
+
+
+# Haversine distance tests
+
+
+def test_haversine_distance_same_point_is_zero():
+    distance = haversine_distance(
+        23.3,
+        85.3,
+        23.3,
+        85.3,
+    )
+
+    assert distance == pytest.approx(0.0)
+
+
+def test_haversine_distance_for_one_degree_latitude():
+    distance = haversine_distance(
+        0,
+        0,
+        1,
+        0,
+    )
+
+    assert distance == pytest.approx(111194.9, abs=2.0)
+
+
+def test_haversine_distance_is_symmetric():
+    first_distance = haversine_distance(
+        23.3,
+        85.3,
+        23.31,
+        85.31,
+    )
+
+    reverse_distance = haversine_distance(
+        23.31,
+        85.31,
+        23.3,
+        85.3,
+    )
+
+    assert first_distance == pytest.approx(reverse_distance)
+
+
+# Graph bounds tests
+
+
+def test_get_graph_bounds_returns_correct_boundaries():
+    graph = nx.MultiDiGraph()
+
+    graph.add_node(1, x=85.3, y=23.3)
+    graph.add_node(2, x=85.5, y=23.5)
+    graph.add_node(3, x=85.4, y=23.4)
+
+    bounds = get_graph_bounds(graph)
+
+    assert bounds == (
+        23.3,
+        23.5,
+        85.3,
+        85.5,
+    )
+
+
+def test_get_graph_bounds_ignores_invalid_node_coordinates():
+    graph = nx.MultiDiGraph()
+
+    graph.add_node(1, x=85.3, y=23.3)
+    graph.add_node(2, x=float("nan"), y=23.4)
+    graph.add_node(3, x=85.4)
+
+    bounds = get_graph_bounds(graph)
+
+    assert bounds == (
+        23.3,
+        23.3,
+        85.3,
+        85.3,
+    )
+
+
+@pytest.mark.parametrize(
+    "graph",
+    [
+        None,
+        nx.MultiDiGraph(),
+    ],
+)
+def test_get_graph_bounds_rejects_empty_graph(graph):
+    with pytest.raises(ValueError):
+        get_graph_bounds(graph)
+
+
+def test_get_graph_bounds_rejects_graph_without_valid_coordinates():
+    graph = nx.MultiDiGraph()
+    graph.add_node(1, x=float("nan"), y=float("inf"))
+
+    with pytest.raises(ValueError):
+        get_graph_bounds(graph)
+
+
+# Location inside graph tests
+
+
+def test_validate_location_in_graph_accepts_location_inside_bounds():
+    graph = create_test_graph()
+
+    validate_location_in_graph(
+        graph,
+        (23.3000, 85.3010),
+    )
+
+
+def test_validate_location_in_graph_rejects_far_location():
+    graph = create_test_graph()
+
+    with pytest.raises(LocationOutsideGraphError):
+        validate_location_in_graph(
+            graph,
+            (24.0, 86.0),
+        )
+
+
+def test_validate_location_in_graph_rejects_empty_graph():
+    graph = nx.MultiDiGraph()
+
+    with pytest.raises(ValueError):
+        validate_location_in_graph(
+            graph,
+            (23.3, 85.3),
+        )
+
+
+# Nearest road node snapping tests
+
+
+def test_snap_location_to_graph_returns_nearest_node(
+    monkeypatch,
+):
+    graph = create_test_graph()
+
+    monkeypatch.setattr(
+        routing_helpers.ox.distance,
+        "nearest_nodes",
+        lambda graph, X, Y: 1,
+    )
+
+    node, distance = snap_location_to_graph(
+        graph,
+        (23.3000, 85.3000),
+        "Starting location",
+    )
+
+    assert node == 1
+    assert distance == pytest.approx(0.0)
+
+
+def test_snap_location_to_graph_rejects_location_outside_graph(
+    monkeypatch,
+):
+    graph = create_test_graph()
+
+    def unexpected_lookup(*args, **kwargs):
+        pytest.fail("Nearest-node lookup should not be called")
+
+    monkeypatch.setattr(
+        routing_helpers.ox.distance,
+        "nearest_nodes",
+        unexpected_lookup,
+    )
+
+    with pytest.raises(LocationOutsideGraphError):
+        snap_location_to_graph(
+            graph,
+            (24.0, 86.0),
+            "Starting location",
+        )
+
+
+def test_snap_location_to_graph_rejects_node_too_far(
+    monkeypatch,
+):
+    graph = nx.MultiDiGraph()
+
+    graph.add_node(1, x=85.3, y=23.3000)
+    graph.add_node(2, x=85.3, y=23.3100)
+
+    monkeypatch.setattr(
+        routing_helpers.ox.distance,
+        "nearest_nodes",
+        lambda graph, X, Y: 1,
+    )
+
+    with pytest.raises(LocationTooFarFromRoadError):
+        snap_location_to_graph(
+            graph,
+            (23.3050, 85.3),
+            "Starting location",
+        )
+
+
+def test_snap_location_to_graph_handles_lookup_failure(
+    monkeypatch,
+):
+    graph = create_test_graph()
+
+    def failed_lookup(*args, **kwargs):
+        raise RuntimeError("Simulated lookup failure")
+
+    monkeypatch.setattr(
+        routing_helpers.ox.distance,
+        "nearest_nodes",
+        failed_lookup,
+    )
+
+    with pytest.raises(ValueError, match="Could not find"):
+        snap_location_to_graph(
+            graph,
+            (23.3000, 85.3000),
+            "Starting location",
+        )
+
+
+# Route calculation tests
+
+
+def test_calculate_routes_finds_different_optimal_paths():
+    graph = create_test_graph()
+
+    result = calculate_routes(
+        graph,
+        1,
+        3,
+    )
+
+    assert result["shortest_path"] == [1, 3]
+    assert result["safety_path"] == [1, 2, 3]
+
+    assert result["shortest_metrics"]["distance"] == 300.0
+    assert result["shortest_metrics"]["safety_cost"] == 100.0
+
+    assert result["safety_metrics"]["distance"] == 200.0
+    assert result["safety_metrics"]["safety_cost"] == 1000.0
+
+
+def test_calculate_routes_rejects_missing_path():
+    graph = nx.MultiDiGraph()
+
+    graph.add_node(1)
+    graph.add_node(2)
+
+    with pytest.raises(nx.NetworkXNoPath):
+        calculate_routes(
+            graph,
+            1,
+            2,
+        )
+
+
+# Real model artifact compatibility test
+
+
+def test_real_safety_model_artifact_loads_and_predicts():
     model_path = (
         Path(__file__).resolve().parents[1]
         / "safety_model.joblib"
