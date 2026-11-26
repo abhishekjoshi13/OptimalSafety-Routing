@@ -10,6 +10,7 @@ import osmnx as osmx
 
 osmx.settings.timeout = 300
 osmx.settings.use_cache = True
+osmx.settings.overpass_rate_limit = False
 
 osmx.settings.overpass_url = (
     "https://overpass.private.coffee/api"
@@ -32,10 +33,6 @@ FEATURE_COLUMNS = [
 
 
 def _get_road_class(highway):
-    """
-    Normalize the OSM highway attribute because it may be
-    either a string or a list of road classifications.
-    """
     if isinstance(highway, list):
         return str(highway[0]) if highway else "unclassified"
 
@@ -46,13 +43,6 @@ def _get_road_class(highway):
 
 
 def _build_cpted_features(edge_attr):
-    """
-    Build the feature values currently used by this project.
-
-    These are rule-based proxy values derived from road class.
-    They are not live measurements of street lighting,
-    pedestrian activity, shops, or police proximity.
-    """
     road_length = float(edge_attr.get("length", 100.0))
 
     if not math.isfinite(road_length) or road_length < 0:
@@ -92,12 +82,6 @@ def build_dynamic_safety_graph(
     city_name: str,
     model_path: str
 ) -> nx.MultiDiGraph:
-    """
-    Build a walkable street graph around a geocoded location,
-    predict risk classes for its edges, and attach routing costs.
-
-    The graph radius is 1500 metres around the geocoded center.
-    """
 
     if not isinstance(city_name, str) or not city_name.strip():
         raise ValueError("A valid city or area name is required")
@@ -210,12 +194,6 @@ def extract_path_metrics(
     path: list,
     route_weight: str = "safety_cost"
 ) -> dict:
-    """
-    Calculate route metrics using the same edge-selection
-    rule used by NetworkX for weighted MultiDiGraph paths.
-
-    route_weight should be either 'length' or 'safety_cost'.
-    """
 
     if route_weight not in ("length", "safety_cost"):
         raise ValueError(
@@ -299,6 +277,3 @@ def extract_path_metrics(
         "avg_lux": average_lux,
         "edge_count": edge_count
     }
-
- 
- 
