@@ -225,3 +225,63 @@ def calculate_routes(graph, start_node, end_node):
         "shortest_metrics": shortest_metrics,
         "safety_metrics": safety_metrics
     }
+
+def create_route_map(graph, route_result):
+    shortest_path = route_result["shortest_path"]
+    safety_path = route_result["safety_path"]
+
+    start_coords = route_result["start_coords"]
+    end_coords = route_result["end_coords"]
+
+    shortest_edges = ox.routing.route_to_gdf(
+        graph,
+        shortest_path,
+        weight="length"
+    )
+
+    safety_edges = ox.routing.route_to_gdf(
+        graph,
+        safety_path,
+        weight="safety_cost"
+    )
+
+    route_map = shortest_edges.explore(
+        color="red",
+        style_kwds={
+            "weight": 4,
+            "opacity": 0.6
+        },
+        name="Shortest Path"
+    )
+
+    safety_edges.explore(
+        m=route_map,
+        color="green",
+        style_kwds={
+            "weight": 6,
+            "opacity": 0.9
+        },
+        name="Safety-Weighted Path"
+    )
+
+    folium.Marker(
+        location=start_coords,
+        popup="Origin",
+        icon=folium.Icon(
+            color="blue",
+            icon="play"
+        )
+    ).add_to(route_map)
+
+    folium.Marker(
+        location=end_coords,
+        popup="Destination",
+        icon=folium.Icon(
+            color="red",
+            icon="stop"
+        )
+    ).add_to(route_map)
+
+    folium.LayerControl().add_to(route_map)
+
+    return route_map
