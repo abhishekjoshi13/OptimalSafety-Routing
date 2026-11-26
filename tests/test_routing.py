@@ -285,3 +285,35 @@ def test_route_metrics_reject_missing_path_edge():
             [1, 2],
             route_weight="length",
         )
+
+def test_real_safety_model_artifact_loads_and_predicts():
+    from pathlib import Path
+    import joblib
+
+    model_path = (
+        Path(__file__).resolve().parents[1]
+        / "safety_model.joblib"
+    )
+
+    assert model_path.is_file()
+
+    model = joblib.load(model_path)
+
+    sample_features = pd.DataFrame(
+        [
+            [100.0, 1, 85.0, 200, 8, 1.0],
+            [150.0, 1, 45.0, 50, 2, 3.0],
+            [80.0, 1, 15.0, 10, 0, 5.0],
+        ],
+        columns=FEATURE_COLUMNS,
+    )
+
+    assert list(model.feature_names_in_) == FEATURE_COLUMNS
+
+    predictions = model.predict(sample_features)
+
+    assert len(predictions) == 3
+
+    assert set(predictions).issubset(
+        {"Safe", "Moderate", "High Risk"}
+    )
