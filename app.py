@@ -39,19 +39,20 @@ def geocode_location(address, city_name):
     city_lower = city_name.lower()
     address_lower = address.lower()
 
-    candidates = [
-        address,
-        f"{address}, {city_name}",
-    ]
+    candidates = []
 
     if "ranchi" in city_lower or "ranchi" in address_lower:
         candidates.extend([
-            f"{address}, Ranchi, Jharkhand, India",
             f"{address}, Lalpur, Ranchi, Jharkhand, India",
+            f"{address}, Ranchi, Jharkhand, India",
+            f"{address}, {city_name}",
+            address
         ])
     else:
         candidates.extend([
             f"{address}, {city_name}, India",
+            f"{address}, {city_name}",
+            address
         ])
 
     unique_candidates = []
@@ -65,19 +66,21 @@ def geocode_location(address, city_name):
             seen.add(normalized)
             unique_candidates.append(candidate)
 
-    errors = []
-
     for candidate in unique_candidates:
         try:
-            logger.info("Trying geocoding query: %s", candidate)
+            logger.info(
+                "Trying geocoding query: %s",
+                candidate
+            )
 
             coordinates = ox.geocode(candidate)
-
             coordinates = validate_coordinates(coordinates)
 
             logger.info(
-                "Location geocoded successfully using: %s",
-                candidate
+                "Geocoded '%s' to coordinates: latitude=%s, longitude=%s",
+                candidate,
+                coordinates[0],
+                coordinates[1]
             )
 
             return coordinates
@@ -88,7 +91,6 @@ def geocode_location(address, city_name):
                 candidate,
                 exc
             )
-            errors.append(candidate)
 
     raise ValueError(
         f"Could not locate '{address}'. "
