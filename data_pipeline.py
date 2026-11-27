@@ -52,24 +52,31 @@ FEATURE_COLUMNS = [
 
 def _get_city_query_variants(city_name):
     normalized = city_name.strip()
-    variants = [normalized]
-
     lower_name = normalized.lower()
 
     if "ranchi" in lower_name:
-        variants.extend([
+        variants = [
+            normalized,
             "Ranchi, Jharkhand, India",
+            "Ranchi, India",
             "Ranchi, Jharkhand",
-        ])
+            "Ranchi",
+        ]
 
     elif "patna" in lower_name:
-        variants.extend([
+        variants = [
+            normalized,
             "Patna, Bihar, India",
             "Patna, Bihar",
-        ])
+            "Patna, India",
+            "Patna",
+        ]
 
     else:
-        variants.append(f"{normalized}, India")
+        variants = [
+            normalized,
+            f"{normalized}, India",
+        ]
 
     unique_variants = []
     seen = set()
@@ -174,65 +181,53 @@ def _get_city_boundary(city_name):
     )
 
     for query in query_variants:
-        for result_number in range(
-            1,
-            GEOCODING_RESULT_LIMIT + 1,
-        ):
-            try:
-                logger.info(
-                    "Trying geocoding query '%s', result %s",
-                    query,
-                    result_number,
-                )
+        try:
+            logger.info(
+                "Trying city boundary query: %s",
+                query,
+            )
 
-                boundary_gdf = osmx.geocode_to_gdf(
-                    query,
-                    which_result=result_number,
-                )
+            boundary_gdf = osmx.geocode_to_gdf(query)
 
-                city_polygon = _validate_city_polygon(
-                    boundary_gdf,
-                    city_name,
-                )
+            city_polygon = _validate_city_polygon(
+                boundary_gdf,
+                city_name,
+            )
 
-                if city_polygon is None:
-                    logger.info(
-                        "Result %s for '%s' did not contain "
-                        "a valid polygon",
-                        result_number,
-                        query,
-                    )
-                    continue
-
-                logger.info(
-                    "Valid city polygon found for '%s' "
-                    "using query '%s', result %s. Geometry: %s",
-                    city_name,
-                    query,
-                    result_number,
-                    city_polygon.geom_type,
-                )
-
-                return city_polygon
-
-            except Exception as exc:
-                geocoding_errors.append(
-                    f"{query} (result {result_number}): {exc}"
-                )
-
+            if city_polygon is None:
                 logger.warning(
-                    "Geocoding attempt failed for '%s', result %s: %s",
+                    "No valid polygon found for query: %s",
                     query,
-                    result_number,
-                    exc,
                 )
+                continue
+
+            logger.info(
+                "Valid city polygon retrieved for '%s' "
+                "using query '%s'. Geometry: %s",
+                city_name,
+                query,
+                city_polygon.geom_type,
+            )
+
+            return city_polygon
+
+        except Exception as exc:
+            geocoding_errors.append(
+                f"{query}: {exc}"
+            )
+
+            logger.warning(
+                "Boundary lookup failed for '%s': %s",
+                query,
+                exc,
+            )
 
     error_details = " | ".join(geocoding_errors[-5:])
 
     raise RuntimeError(
-        f"No valid city polygon could be retrieved for "
-        f"'{city_name}'. Multiple geocoding queries and results "
-        f"were attempted. {error_details}"
+        f"No valid city boundary could be retrieved for "
+        f"'{city_name}'. Tried multiple search queries. "
+        f"{error_details}"
     )
 
 
@@ -811,4 +806,3 @@ def extract_path_metrics(
         "avg_lux": average_lux,
         "edge_count": edge_count,
     }
-
