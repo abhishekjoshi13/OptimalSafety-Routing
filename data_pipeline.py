@@ -18,6 +18,10 @@ BACKUP_GRAPH_PATH = BASE_DIR / "city_map.graphml.gz"
 
 GRAPH_RADIUS_METERS = 1500
 
+# Approximate Lalpur Chowk anchor for the Lalpur area in Ranchi.
+# Other locations continue to use normal geocoding.
+LALPUR_RANCHI_CENTER = (23.3721, 85.3383)
+
 osmx.settings.timeout = 300
 osmx.settings.requests_timeout = 60
 osmx.settings.use_cache = True
@@ -41,6 +45,50 @@ FEATURE_COLUMNS = [
     "shopCount",
     "policeDist"
 ]
+
+
+def _get_graph_center(city_name):
+    normalized_city = city_name.lower()
+
+    if "lalpur" in normalized_city and "ranchi" in normalized_city:
+        center_point = LALPUR_RANCHI_CENTER
+        logger.info(
+            "Using Lalpur, Ranchi anchor coordinates: %s",
+            center_point
+        )
+    else:
+        center_point = osmx.geocode(city_name.strip())
+
+    if (
+        not isinstance(center_point, (tuple, list))
+        or len(center_point) != 2
+    ):
+        raise ValueError(
+            "Geocoding did not return valid coordinates"
+        )
+
+    latitude, longitude = center_point
+
+    latitude = float(latitude)
+    longitude = float(longitude)
+
+    if not (
+        math.isfinite(latitude)
+        and math.isfinite(longitude)
+        and -90 <= latitude <= 90
+        and -180 <= longitude <= 180
+    ):
+        raise ValueError(
+            "Geocoding returned out-of-range coordinates"
+        )
+
+    logger.info(
+        "Using graph centre coordinates: latitude=%s, longitude=%s",
+        latitude,
+        longitude
+    )
+
+    return latitude, longitude
 
 
 def _get_road_class(highway):
@@ -336,27 +384,7 @@ def build_dynamic_safety_graph(
     if backup_graph_path is None:
         backup_graph_path = BACKUP_GRAPH_PATH
 
-    center_point = osmx.geocode(city_name.strip())
-
-    if (
-        not isinstance(center_point, (tuple, list))
-        or len(center_point) != 2
-    ):
-        raise ValueError(
-            "Geocoding did not return valid coordinates"
-        )
-
-    latitude, longitude = center_point
-
-    if not (
-        math.isfinite(latitude)
-        and math.isfinite(longitude)
-        and -90 <= latitude <= 90
-        and -180 <= longitude <= 180
-    ):
-        raise ValueError(
-            "Geocoding returned out-of-range coordinates"
-        )
+    center_point = _get_graph_center(city_name)
 
     try:
         logger.info(
@@ -505,3 +533,4 @@ def extract_path_metrics(
         "avg_lux": average_lux,
         "edge_count": edge_count
     }
+
