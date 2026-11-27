@@ -1,14 +1,15 @@
 
-streamlit
-streamlit-folium
-osmnx
-networkx
-folium
+
+streamlit==1.67.0
+streamlit-folium==0.28.0
+osmnx==2.1.2
+networkx==3.6.1
+folium==1.0.0
 joblib==1.6.0
 scikit-learn==1.6.1
 pandas==2.2.3
 numpy==2.4.6
-geopandas
-mapclassify
-matplotlib
-pydantic
+geopandas==1.2.0
+mapclassify==2.10.0
+matplotlib==3.11.2
+pydantic==2.14.4
