@@ -18,18 +18,20 @@ BACKUP_GRAPH_PATH = BASE_DIR / "city_map.graphml.gz"
 
 GRAPH_RADIUS_METERS = 1500
 
-# Approximate Lalpur Chowk anchor for the Lalpur area in Ranchi.
-# Other locations continue to use normal geocoding.
 LALPUR_RANCHI_CENTER = (23.3721, 85.3383)
 
-osmx.settings.timeout = 300
+LIVE_OVERPASS_ENDPOINTS = [
+    "https://overpass.private.coffee/api",
+    "https://overpass-api.de/api",
+    "https://overpass.kumi.systems/api",
+]
+
+osmx.settings.timeout = 180
 osmx.settings.requests_timeout = 60
 osmx.settings.use_cache = True
 osmx.settings.overpass_rate_limit = False
 
-osmx.settings.overpass_url = (
-    "https://overpass.private.coffee/api"
-)
+osmx.settings.overpass_url = LIVE_OVERPASS_ENDPOINTS[0]
 
 osmx.settings.http_user_agent = (
     "OptimalSafetyRouting/1.0 "
@@ -43,7 +45,7 @@ FEATURE_COLUMNS = [
     "luxLevel",
     "pedestrianTraffic",
     "shopCount",
-    "policeDist"
+    "policeDist",
 ]
 
 
@@ -54,9 +56,13 @@ def _get_graph_center(city_name):
         center_point = LALPUR_RANCHI_CENTER
         logger.info(
             "Using Lalpur, Ranchi anchor coordinates: %s",
-            center_point
+            center_point,
         )
     else:
+        logger.info(
+            "Geocoding requested city or area: %s",
+            city_name,
+        )
         center_point = osmx.geocode(city_name.strip())
 
     if (
@@ -83,9 +89,9 @@ def _get_graph_center(city_name):
         )
 
     logger.info(
-        "Using graph centre coordinates: latitude=%s, longitude=%s",
+        "Using graph centre: latitude=%s, longitude=%s",
         latitude,
-        longitude
+        longitude,
     )
 
     return latitude, longitude
@@ -142,7 +148,7 @@ def _build_cpted_features(edge_attr):
         "luxLevel": lux,
         "pedestrianTraffic": traffic,
         "shopCount": shops,
-        "policeDist": police
+        "policeDist": police,
     }
 
 
@@ -173,23 +179,7 @@ def _haversine_distance(lat1, lon1, lat2, lon2):
     )
 
 
-def _load_backup_graph(center_point, backup_graph_path):
-    backup_graph_path = Path(backup_graph_path)
-
-    if not backup_graph_path.is_file():
-        raise FileNotFoundError(
-            f"Backup road graph not found: {backup_graph_path}"
-        )
-
-    logger.warning(
-        "Loading backup GraphML road network: %s",
-        backup_graph_path.name
-    )
-
-    graph = osmx.load_graphml(
-        filepath=backup_graph_path
-    )
-
+def _validate_road_graph(graph, source_name):
     if (
         graph is None
         or not isinstance(graph, nx.MultiDiGraph)
@@ -197,11 +187,97 @@ def _load_backup_graph(center_point, backup_graph_path):
         or graph.number_of_edges() == 0
     ):
         raise ValueError(
-            "The backup GraphML file does not contain a valid road graph"
+            f"{source_name} did not provide a valid road graph"
         )
 
-    center_lat, center_lon = center_point
+    return graph
 
+
+def _download_live_graph(center_point, city_name):
+    original_endpoint = osmx.settings.overpass_url
+    endpoint_errors = []
+
+    try:
+        for endpoint in LIVE_OVERPASS_ENDPOINTS:
+            try:
+                logger.info(
+                    "Trying live OSM download for '%s' using %s",
+                    city_name,
+                    endpoint,
+                )
+
+                osmx.settings.overpass_url = endpoint
+
+                graph = osmx.graph_from_point(
+                    center_point,
+                    dist=GRAPH_RADIUS_METERS,
+                    network_type="walk",
+                )
+
+                graph = _validate_road_graph(
+                    graph,
+                    f"Live OSM endpoint {endpoint}",
+                )
+
+                graph.graph["data_source"] = "OpenStreetMap"
+                graph.graph["overpass_endpoint"] = endpoint
+                graph.graph["requested_location"] = city_name
+
+                logger.info(
+                    "Live OSM download succeeded using %s: "
+                    "%s nodes and %s edges",
+                    endpoint,
+                    graph.number_of_nodes(),
+                    graph.number_of_edges(),
+                )
+
+                return graph
+
+            except Exception as exc:
+                endpoint_errors.append(
+                    f"{endpoint}: {exc}"
+                )
+
+                logger.warning(
+                    "OSM endpoint failed: %s. Reason: %s",
+                    endpoint,
+                    exc,
+                )
+
+    finally:
+        osmx.settings.overpass_url = original_endpoint
+
+    error_summary = " | ".join(endpoint_errors)
+
+    raise RuntimeError(
+        "All configured OpenStreetMap Overpass endpoints failed. "
+        f"Endpoint errors: {error_summary}"
+    )
+
+
+def _load_backup_graph(center_point, backup_graph_path):
+    backup_graph_path = Path(backup_graph_path)
+
+    if not backup_graph_path.is_file():
+        raise FileNotFoundError(
+            "No local backup road graph is available"
+        )
+
+    logger.warning(
+        "Checking local backup graph: %s",
+        backup_graph_path.name,
+    )
+
+    graph = osmx.load_graphml(
+        filepath=backup_graph_path
+    )
+
+    graph = _validate_road_graph(
+        graph,
+        "The local backup GraphML file",
+    )
+
+    center_lat, center_lon = center_point
     nearby_nodes = []
 
     for node, data in graph.nodes(data=True):
@@ -214,6 +290,8 @@ def _load_backup_graph(center_point, backup_graph_path):
         if not (
             math.isfinite(latitude)
             and math.isfinite(longitude)
+            and -90 <= latitude <= 90
+            and -180 <= longitude <= 180
         ):
             continue
 
@@ -221,7 +299,7 @@ def _load_backup_graph(center_point, backup_graph_path):
             center_lat,
             center_lon,
             latitude,
-            longitude
+            longitude,
         )
 
         if distance <= GRAPH_RADIUS_METERS:
@@ -229,15 +307,19 @@ def _load_backup_graph(center_point, backup_graph_path):
 
     if len(nearby_nodes) < 2:
         raise ValueError(
-            "The backup road graph does not cover the requested "
-            "location within the configured 1.5 km radius"
+            "The local backup graph does not cover the requested "
+            "location. A geographically matching backup is required. "
+            f"The requested centre is {center_lat:.6f}, "
+            f"{center_lon:.6f}; the allowed radius is "
+            f"{GRAPH_RADIUS_METERS} metres."
         )
 
     local_graph = graph.subgraph(nearby_nodes).copy()
 
     if local_graph.number_of_edges() == 0:
         raise ValueError(
-            "No road connections were found around the requested location"
+            "The backup graph has no road connections "
+            "inside the requested area"
         )
 
     components = list(
@@ -246,7 +328,7 @@ def _load_backup_graph(center_point, backup_graph_path):
 
     largest_component = max(
         components,
-        key=len
+        key=len,
     )
 
     local_graph = local_graph.subgraph(
@@ -258,7 +340,7 @@ def _load_backup_graph(center_point, backup_graph_path):
         or local_graph.number_of_edges() == 0
     ):
         raise ValueError(
-            "The backup road network has no usable connected component"
+            "The matching backup area has no usable connected road network"
         )
 
     for node, data in local_graph.nodes(data=True):
@@ -267,7 +349,7 @@ def _load_backup_graph(center_point, backup_graph_path):
 
     for u, v, key, data in local_graph.edges(
         keys=True,
-        data=True
+        data=True,
     ):
         try:
             edge_length = float(data["length"])
@@ -283,10 +365,14 @@ def _load_backup_graph(center_point, backup_graph_path):
 
         data["length"] = edge_length
 
+    local_graph.graph["data_source"] = "Local backup GraphML"
+    local_graph.graph["backup_graph"] = backup_graph_path.name
+
     logger.info(
-        "Backup graph loaded: %s nodes and %s edges",
+        "Geographically matching backup loaded: "
+        "%s nodes and %s edges",
         local_graph.number_of_nodes(),
-        local_graph.number_of_edges()
+        local_graph.number_of_edges(),
     )
 
     return local_graph
@@ -300,7 +386,7 @@ def _add_model_predictions(graph, model_path):
 
     for u, v, key, edge_attr in graph.edges(
         keys=True,
-        data=True
+        data=True,
     ):
         features = _build_cpted_features(edge_attr)
 
@@ -314,7 +400,7 @@ def _add_model_predictions(graph, model_path):
 
     features_df = pd.DataFrame(
         edges_data,
-        columns=FEATURE_COLUMNS
+        columns=FEATURE_COLUMNS,
     )
 
     predictions = model.predict(features_df)
@@ -354,7 +440,7 @@ def _add_model_predictions(graph, model_path):
 
     logger.info(
         "ML inference completed for %s road segments",
-        len(edges_order)
+        len(edges_order),
     )
 
     return graph
@@ -363,7 +449,7 @@ def _add_model_predictions(graph, model_path):
 def build_dynamic_safety_graph(
     city_name: str,
     model_path: str,
-    backup_graph_path=None
+    backup_graph_path=None,
 ) -> nx.MultiDiGraph:
 
     if not isinstance(city_name, str) or not city_name.strip():
@@ -381,65 +467,63 @@ def build_dynamic_safety_graph(
             "The configured safety model was not found"
         )
 
+    city_name = city_name.strip()
+
     if backup_graph_path is None:
         backup_graph_path = BACKUP_GRAPH_PATH
 
+    # Geocoding is performed first because the same verified
+    # coordinates are required for both live and backup sources.
     center_point = _get_graph_center(city_name)
 
+    live_error = None
+
     try:
-        logger.info(
-            "Attempting live OpenStreetMap graph download for %s",
-            city_name
-        )
-
-        graph = osmx.graph_from_point(
+        graph = _download_live_graph(
             center_point,
-            dist=GRAPH_RADIUS_METERS,
-            network_type="walk"
+            city_name,
         )
 
-        if (
-            graph is None
-            or graph.number_of_nodes() == 0
-            or graph.number_of_edges() == 0
-        ):
-            raise ValueError(
-                "Live OpenStreetMap returned an empty road graph"
-            )
+    except Exception as exc:
+        live_error = exc
 
-        logger.info(
-            "Live graph downloaded successfully: %s nodes, %s edges",
-            graph.number_of_nodes(),
-            graph.number_of_edges()
-        )
-
-    except Exception as live_error:
         logger.warning(
-            "Live OpenStreetMap download failed. "
-            "Trying the local GraphML backup. Reason: %s",
-            live_error
+            "Live OSM download failed for '%s'. "
+            "Checking geographically matching backup. Reason: %s",
+            city_name,
+            exc,
         )
 
         try:
             graph = _load_backup_graph(
                 center_point,
-                backup_graph_path
+                backup_graph_path,
             )
 
         except Exception as backup_error:
             logger.exception(
-                "Both live graph download and backup graph loading failed"
+                "No usable geographically matching backup was found"
             )
 
             raise RuntimeError(
-                "Unable to obtain a road network. "
-                f"Live download failed: {live_error}. "
-                f"Backup loading failed: {backup_error}."
+                f"Could not load the road network for '{city_name}'. "
+                "Live OpenStreetMap download failed, and the available "
+                "local backup does not cover this location. "
+                "Please try again later or use a location with "
+                "available map data. "
+                f"Live OSM error: {live_error}. "
+                f"Backup error: {backup_error}."
             ) from backup_error
 
     graph = _add_model_predictions(
         graph,
-        model_path
+        model_path,
+    )
+
+    logger.info(
+        "Road graph ready for '%s'. Source: %s",
+        city_name,
+        graph.graph.get("data_source", "Unknown"),
     )
 
     return graph
@@ -448,7 +532,7 @@ def build_dynamic_safety_graph(
 def extract_path_metrics(
     graph: nx.MultiDiGraph,
     path: list,
-    route_weight: str = "safety_cost"
+    route_weight: str = "safety_cost",
 ) -> dict:
 
     if route_weight not in ("length", "safety_cost"):
@@ -484,7 +568,7 @@ def extract_path_metrics(
             parallel_edges.items(),
             key=lambda item: float(
                 item[1].get(route_weight, 1)
-            )
+            ),
         )
 
         edge_length = float(
@@ -504,7 +588,7 @@ def extract_path_metrics(
             for value in (
                 edge_length,
                 edge_safety_cost,
-                edge_lux
+                edge_lux,
             )
         ):
             raise ValueError(
@@ -531,6 +615,5 @@ def extract_path_metrics(
         "safety_cost": total_safety_cost,
         "high_risk_count": high_risk_segments,
         "avg_lux": average_lux,
-        "edge_count": edge_count
+        "edge_count": edge_count,
     }
-
