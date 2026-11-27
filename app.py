@@ -100,6 +100,67 @@ def geocode_location(address, city_name):
     )
 
 
+def _describe_graph_node(graph, node):
+    """
+    Return the most useful nearby OSM road name for a graph node.
+    Fall back to coordinates when no named road is available.
+    """
+
+    node_data = graph.nodes[node]
+
+    latitude = float(node_data["y"])
+    longitude = float(node_data["x"])
+
+    road_names = []
+
+    for _, _, edge_data in graph.in_edges(
+        node,
+        data=True
+    ):
+        name = edge_data.get("name")
+
+        if isinstance(name, list):
+            road_names.extend(
+                str(item).strip()
+                for item in name
+                if item and str(item).strip()
+            )
+        elif name and str(name).strip():
+            road_names.append(str(name).strip())
+
+    for _, _, edge_data in graph.out_edges(
+        node,
+        data=True
+    ):
+        name = edge_data.get("name")
+
+        if isinstance(name, list):
+            road_names.extend(
+                str(item).strip()
+                for item in name
+                if item and str(item).strip()
+            )
+        elif name and str(name).strip():
+            road_names.append(str(name).strip())
+
+    if road_names:
+        most_common_name = Counter(
+            road_names
+        ).most_common(1)[0][0]
+
+        return (
+            f"Near {most_common_name}",
+            latitude,
+            longitude
+        )
+
+    return (
+        "Unnamed road location",
+        latitude,
+        longitude
+    )
+
+
 def find_different_route_pair(graph, max_sample_nodes=30):
     """
     Inspect a bounded, geographically distributed sample of graph nodes.
@@ -142,6 +203,7 @@ def find_different_route_pair(graph, max_sample_nodes=30):
             )
             for index in range(sample_count)
         ]
+
         sampled_nodes = [
             valid_nodes[index]
             for index in indices
@@ -216,6 +278,34 @@ def find_different_route_pair(graph, max_sample_nodes=30):
                     end_info[2]
                 )
             }
+
+    if best_candidate is not None:
+        start_label, start_lat, start_lon = (
+            _describe_graph_node(
+                graph,
+                best_candidate["start_node"]
+            )
+        )
+
+        end_label, end_lat, end_lon = (
+            _describe_graph_node(
+                graph,
+                best_candidate["end_node"]
+            )
+        )
+
+        best_candidate["start_label"] = start_label
+        best_candidate["end_label"] = end_label
+
+        best_candidate["start_coords"] = (
+            start_lat,
+            start_lon
+        )
+
+        best_candidate["end_coords"] = (
+            end_lat,
+            end_lon
+        )
 
     return best_candidate
 
@@ -513,14 +603,8 @@ if st.session_state.city_graph is not None:
                 else:
                     st.session_state.route_result = {
                         **candidate,
-                        "start_address": (
-                            f"Diagnostic graph node "
-                            f"{candidate['start_node']}"
-                        ),
-                        "end_address": (
-                            f"Diagnostic graph node "
-                            f"{candidate['end_node']}"
-                        ),
+                        "start_address": candidate["start_label"],
+                        "end_address": candidate["end_label"],
                         "city_name": st.session_state.current_city,
                         "start_snap_distance": 0.0,
                         "end_snap_distance": 0.0
@@ -583,6 +667,15 @@ if (
         f"{route_result['end_address']} "
         f"({route_result['city_name']})"
     )
+
+    if "start_node" in route_result:
+        start_lat, start_lon = route_result["start_coords"]
+        end_lat, end_lon = route_result["end_coords"]
+
+        st.caption(
+            f"Start graph point: {start_lat:.6f}, {start_lon:.6f} "
+            f"| Destination graph point: {end_lat:.6f}, {end_lon:.6f}"
+        )
 
     col1, col2, col3 = st.columns(3)
 
@@ -692,8 +785,6 @@ st.caption(
     "using available road-network data. They do not guarantee safety. "
     "Users should exercise personal judgment."
 )
-
-
 
 
 
