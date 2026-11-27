@@ -1,4 +1,3 @@
-
 import ast
 import logging
 import math
@@ -19,6 +18,10 @@ BACKUP_GRAPH_PATH = BASE_DIR / "city_map.graphml.gz"
 
 GRAPH_RADIUS_METERS = 1500
 
+# OSMnx subdivides large polygon queries into smaller areas.
+# 25 km² keeps individual Overpass requests more manageable.
+OVERPASS_TILE_AREA_M2 = 25_000_000
+
 LALPUR_RANCHI_CENTER = (23.3721, 85.3383)
 
 LIVE_OVERPASS_ENDPOINTS = [
@@ -30,9 +33,10 @@ LIVE_OVERPASS_ENDPOINTS = [
 GEOCODING_RESULT_LIMIT = 5
 
 osmx.settings.timeout = 180
-osmx.settings.requests_timeout = 60
+osmx.settings.requests_timeout = 210
 osmx.settings.use_cache = True
-osmx.settings.overpass_rate_limit = False
+osmx.settings.overpass_rate_limit = True
+osmx.settings.max_query_area_size = OVERPASS_TILE_AREA_M2
 osmx.settings.overpass_url = LIVE_OVERPASS_ENDPOINTS[0]
 
 osmx.settings.http_user_agent = (
@@ -370,9 +374,10 @@ def _download_live_graph(city_polygon, city_name):
             try:
                 logger.info(
                     "Downloading complete city road network "
-                    "for '%s' using %s",
+                    "for '%s' using %s. Maximum query area: %s m²",
                     city_name,
                     endpoint,
+                    OVERPASS_TILE_AREA_M2,
                 )
 
                 osmx.settings.overpass_url = endpoint
