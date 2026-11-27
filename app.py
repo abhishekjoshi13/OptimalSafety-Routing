@@ -1,3 +1,4 @@
+
 import logging
 from collections import Counter
 from itertools import combinations
@@ -33,6 +34,22 @@ MODEL_PATH = Path(__file__).resolve().parent / "safety_model.joblib"
 
 def _clean_location_text(value):
     return " ".join(value.strip().split())
+
+
+def _get_graph_source_details(graph):
+    graph_metadata = graph.graph
+
+    source = graph_metadata.get("data_source", "Unknown source")
+    coverage_type = graph_metadata.get("coverage_type", "Unknown coverage")
+
+    if coverage_type == "city_boundary":
+        coverage = "City boundary-based road network"
+    elif coverage_type == "local_backup":
+        coverage = "Local backup road network (limited area)"
+    else:
+        coverage = "Coverage information unavailable"
+
+    return source, coverage
 
 
 def geocode_location(address, city_name):
@@ -284,7 +301,7 @@ city_input = st.sidebar.text_input(
     value="Lalpur, Ranchi",
 )
 
-if st.sidebar.button("Load Graph (1.5km Radius)"):
+if st.sidebar.button("Load City Road Network"):
     st.session_state.city_graph = None
     st.session_state.current_city = ""
     st.session_state.route_result = None
@@ -296,7 +313,7 @@ if st.sidebar.button("Load Graph (1.5km Radius)"):
         st.sidebar.error("Please enter a valid city or area name.")
     else:
         with st.spinner(
-            "Fetching mapping data and running ML inference..."
+            "Fetching city road network and running ML inference..."
         ):
             try:
                 graph = build_dynamic_safety_graph(
@@ -311,17 +328,36 @@ if st.sidebar.button("Load Graph (1.5km Radius)"):
 
                 from routing_helpers import get_graph_bounds
                 get_graph_bounds(graph)
+
                 st.session_state.city_graph = graph
                 st.session_state.current_city = city_input
-            except Exception:
+
+            except Exception as exc:
                 logger.exception("City graph initialization failed")
                 st.sidebar.error(
-                    "Unable to load this area. Please verify the "
-                    "location and try again."
+                    "Unable to load the road network for this area."
                 )
+                with st.sidebar.expander("Technical details"):
+                    st.write(str(exc)[:1000])
+
 
 if st.session_state.city_graph is not None:
-    st.sidebar.success(f"Loaded region: {st.session_state.current_city}")
+    graph = st.session_state.city_graph
+    source, coverage = _get_graph_source_details(graph)
+
+    st.sidebar.success(
+        f"Loaded region: {st.session_state.current_city}"
+    )
+
+    st.sidebar.markdown("**Road Network Information**")
+    st.sidebar.caption(f"Data source: {source}")
+    st.sidebar.caption(f"Coverage: {coverage}")
+    st.sidebar.caption(
+        f"Road nodes: {graph.number_of_nodes():,}"
+    )
+    st.sidebar.caption(
+        f"Road segments: {graph.number_of_edges():,}"
+    )
     st.sidebar.caption(
         f"Maximum location snapping distance: "
         f"{MAX_SNAP_DISTANCE_METERS:.0f} metres"
@@ -666,7 +702,6 @@ st.caption(
     "available road-network data. They do not guarantee safety. "
     "Users should exercise personal judgment."
 )
-   
 
   
 
