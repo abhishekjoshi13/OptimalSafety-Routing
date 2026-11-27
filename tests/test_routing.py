@@ -2,11 +2,13 @@
 import math
 from pathlib import Path
 
+import geopandas as gpd
 import joblib
 import networkx as nx
 import pandas as pd
 import pytest
 from pydantic import ValidationError
+from shapely.geometry import Polygon
 
 import data_pipeline
 import routing_helpers
@@ -202,15 +204,30 @@ def test_build_dynamic_safety_graph_adds_predictions(
     model_file = tmp_path / "trusted_model.joblib"
     model_file.touch()
 
-    monkeypatch.setattr(
-        data_pipeline.osmx,
-        "geocode",
-        lambda city: (23.3, 85.3),
+    boundary = gpd.GeoDataFrame(
+        {
+            "geometry": [
+                Polygon([
+                    (85.2, 23.2),
+                    (85.5, 23.2),
+                    (85.5, 23.5),
+                    (85.2, 23.5),
+                    (85.2, 23.2),
+                ])
+            ]
+        },
+        crs="EPSG:4326",
     )
 
     monkeypatch.setattr(
         data_pipeline.osmx,
-        "graph_from_point",
+        "geocode_to_gdf",
+        lambda *args, **kwargs: boundary,
+    )
+
+    monkeypatch.setattr(
+        data_pipeline.osmx,
+        "graph_from_polygon",
         lambda *args, **kwargs: graph.copy(),
     )
 
@@ -605,7 +622,6 @@ def test_snap_location_to_graph_handles_lookup_failure(
 # Route calculation tests
 
 
-
 def test_calculate_routes_finds_different_optimal_paths():
     graph = create_test_graph()
 
@@ -623,7 +639,6 @@ def test_calculate_routes_finds_different_optimal_paths():
 
     assert result["safety_metrics"]["distance"] == 300.0
     assert result["safety_metrics"]["safety_cost"] == 100.0
-
 
 
 def test_calculate_routes_rejects_missing_path():
