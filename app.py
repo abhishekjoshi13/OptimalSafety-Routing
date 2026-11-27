@@ -44,6 +44,12 @@ def _get_graph_source_details(graph):
 
     if coverage_type == "city_boundary":
         coverage = "City boundary-based road network"
+    elif coverage_type == "city_radius":
+        radius = graph_metadata.get("coverage_radius_meters", 1500)
+        coverage = (
+            f"Centre-based road network "
+            f"({radius:,} metre radius)"
+        )
     elif coverage_type == "local_backup":
         coverage = "Local backup road network (limited area)"
     else:
@@ -702,11 +708,6 @@ st.caption(
     "available road-network data. They do not guarantee safety. "
     "Users should exercise personal judgment."
 )
-
-  
-
-    
-
 
 
 
