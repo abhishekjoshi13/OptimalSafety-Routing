@@ -2,13 +2,11 @@
 import math
 from pathlib import Path
 
-import geopandas as gpd
 import joblib
 import networkx as nx
 import pandas as pd
 import pytest
 from pydantic import ValidationError
-from shapely.geometry import Polygon
 
 import data_pipeline
 import routing_helpers
@@ -80,6 +78,12 @@ def create_test_graph():
     )
 
     return graph
+
+
+def create_model_file(tmp_path):
+    model_file = tmp_path / "trusted_model.joblib"
+    model_file.touch()
+    return model_file
 
 
 def test_location_schema_strips_whitespace():
@@ -174,7 +178,7 @@ def test_unknown_road_class_uses_fallback_proxies():
     assert features["policeDist"] == 5.0
 
 
-def test_build_dynamic_safety_graph_adds_predictions(
+def test_build_dynamic_safety_graph_uses_live_osm_radius_for_ranchi(
     monkeypatch,
     tmp_path,
 ):
@@ -200,47 +204,50 @@ def test_build_dynamic_safety_graph_adds_predictions(
     )
 
     model = FakeModel(["Moderate", "High Risk"])
+    model_file = create_model_file(tmp_path)
 
-    model_file = tmp_path / "trusted_model.joblib"
-    model_file.touch()
+    calls = []
 
-    boundary = gpd.GeoDataFrame(
-        {
-            "geometry": [
-                Polygon([
-                    (85.2, 23.2),
-                    (85.5, 23.2),
-                    (85.5, 23.5),
-                    (85.2, 23.5),
-                    (85.2, 23.2),
-                ])
-            ]
-        },
-        crs="EPSG:4326",
-    )
+    def fake_graph_from_point(center_point, dist, network_type):
+        calls.append((center_point, dist, network_type))
+        return graph.copy()
 
     monkeypatch.setattr(
         data_pipeline.osmx,
-        "geocode_to_gdf",
-        lambda *args, **kwargs: boundary,
+        "graph_from_point",
+        fake_graph_from_point,
     )
-
-    monkeypatch.setattr(
-        data_pipeline.osmx,
-        "graph_from_polygon",
-        lambda *args, **kwargs: graph.copy(),
-    )
-
     monkeypatch.setattr(
         data_pipeline.joblib,
         "load",
         lambda path: model,
     )
 
+    def unexpected_backup(*args, **kwargs):
+        pytest.fail("Ranchi backup must not be used when live OSM succeeds")
+
+    monkeypatch.setattr(
+        data_pipeline,
+        "_load_backup_graph",
+        unexpected_backup,
+    )
+
     result = build_dynamic_safety_graph(
         "Ranchi",
         str(model_file),
     )
+
+    assert calls == [
+        (
+            data_pipeline.LALPUR_RANCHI_CENTER,
+            data_pipeline.GRAPH_RADIUS_METERS,
+            "walk",
+        )
+    ]
+
+    assert result.graph["data_source"] == "OpenStreetMap"
+    assert result.graph["coverage_type"] == "city_radius"
+    assert result.graph["coverage_radius_meters"] == 1500
 
     assert result.number_of_edges() == 2
 
@@ -253,6 +260,160 @@ def test_build_dynamic_safety_graph_adds_predictions(
     assert isinstance(model.received_features, pd.DataFrame)
     assert list(model.received_features.columns) == FEATURE_COLUMNS
     assert len(model.received_features) == 2
+
+
+def test_build_dynamic_safety_graph_uses_live_osm_radius_for_other_city(
+    monkeypatch,
+    tmp_path,
+):
+    graph = create_test_graph()
+    model = FakeModel(["Safe", "Safe", "Safe"])
+    model_file = create_model_file(tmp_path)
+
+    geocoded_center = (25.5941, 85.1376)
+    monkeypatch.setattr(
+        data_pipeline.osmx,
+        "geocode",
+        lambda city_name: geocoded_center,
+    )
+
+    calls = []
+
+    def fake_graph_from_point(center_point, dist, network_type):
+        calls.append((center_point, dist, network_type))
+        return graph.copy()
+
+    monkeypatch.setattr(
+        data_pipeline.osmx,
+        "graph_from_point",
+        fake_graph_from_point,
+    )
+    monkeypatch.setattr(
+        data_pipeline.joblib,
+        "load",
+        lambda path: model,
+    )
+
+    def unexpected_backup(*args, **kwargs):
+        pytest.fail("A non-Ranchi city must never use the Ranchi backup")
+
+    monkeypatch.setattr(
+        data_pipeline,
+        "_load_backup_graph",
+        unexpected_backup,
+    )
+
+    result = build_dynamic_safety_graph(
+        "Patna",
+        str(model_file),
+    )
+
+    assert calls == [
+        (
+            geocoded_center,
+            data_pipeline.GRAPH_RADIUS_METERS,
+            "walk",
+        )
+    ]
+
+    assert result.graph["data_source"] == "OpenStreetMap"
+    assert result.graph["coverage_type"] == "city_radius"
+    assert result.graph["requested_location"] == "Patna"
+
+
+def test_ranchi_backup_is_used_only_after_live_osm_fails(
+    monkeypatch,
+    tmp_path,
+):
+    graph = create_test_graph()
+    backup_graph = graph.copy()
+    model = FakeModel(["Safe", "Safe", "Safe"])
+    model_file = create_model_file(tmp_path)
+
+    monkeypatch.setattr(
+        data_pipeline,
+        "_get_graph_center",
+        lambda city_name: data_pipeline.LALPUR_RANCHI_CENTER,
+    )
+
+    def failed_live_download(center_point, city_name):
+        raise RuntimeError("Simulated live OSM failure")
+
+    backup_calls = []
+
+    def fake_backup(center_point, backup_graph_path):
+        backup_calls.append((center_point, backup_graph_path))
+        backup_graph.graph["data_source"] = "Local Ranchi backup GraphML"
+        backup_graph.graph["coverage_type"] = "local_backup"
+        backup_graph.graph["requested_location"] = "Ranchi"
+        return backup_graph.copy()
+
+    monkeypatch.setattr(
+        data_pipeline,
+        "_download_live_graph",
+        failed_live_download,
+    )
+    monkeypatch.setattr(
+        data_pipeline,
+        "_load_backup_graph",
+        fake_backup,
+    )
+    monkeypatch.setattr(
+        data_pipeline.joblib,
+        "load",
+        lambda path: model,
+    )
+
+    result = build_dynamic_safety_graph(
+        "Ranchi",
+        str(model_file),
+    )
+
+    assert len(backup_calls) == 1
+    assert backup_calls[0][0] == data_pipeline.LALPUR_RANCHI_CENTER
+    assert result.graph["data_source"] == "Local Ranchi backup GraphML"
+    assert result.graph["coverage_type"] == "local_backup"
+
+
+def test_non_ranchi_city_does_not_use_backup_after_live_osm_fails(
+    monkeypatch,
+    tmp_path,
+):
+    model_file = create_model_file(tmp_path)
+    backup_called = False
+
+    monkeypatch.setattr(
+        data_pipeline,
+        "_get_graph_center",
+        lambda city_name: (25.5941, 85.1376),
+    )
+
+    def failed_live_download(center_point, city_name):
+        raise RuntimeError("Simulated live OSM failure")
+
+    def unexpected_backup(*args, **kwargs):
+        nonlocal backup_called
+        backup_called = True
+        pytest.fail("Patna must not use the Ranchi backup")
+
+    monkeypatch.setattr(
+        data_pipeline,
+        "_download_live_graph",
+        failed_live_download,
+    )
+    monkeypatch.setattr(
+        data_pipeline,
+        "_load_backup_graph",
+        unexpected_backup,
+    )
+
+    with pytest.raises(RuntimeError, match="No local backup is configured"):
+        build_dynamic_safety_graph(
+            "Patna",
+            str(model_file),
+        )
+
+    assert backup_called is False
 
 
 def test_build_dynamic_safety_graph_rejects_missing_model():
@@ -360,9 +521,6 @@ def test_route_metrics_reject_missing_path_edge():
         )
 
 
-# Coordinate validation tests
-
-
 @pytest.mark.parametrize(
     "coords, expected",
     [
@@ -395,9 +553,6 @@ def test_validate_coordinates_accepts_valid_values(coords, expected):
 def test_validate_coordinates_rejects_invalid_values(coords):
     with pytest.raises(ValueError):
         validate_coordinates(coords)
-
-
-# Haversine distance tests
 
 
 def test_haversine_distance_same_point_is_zero():
@@ -438,9 +593,6 @@ def test_haversine_distance_is_symmetric():
     )
 
     assert first_distance == pytest.approx(reverse_distance)
-
-
-# Graph bounds tests
 
 
 def test_get_graph_bounds_returns_correct_boundaries():
@@ -497,9 +649,6 @@ def test_get_graph_bounds_rejects_graph_without_valid_coordinates():
         get_graph_bounds(graph)
 
 
-# Location inside graph tests
-
-
 def test_validate_location_in_graph_accepts_location_inside_bounds():
     graph = create_test_graph()
 
@@ -529,12 +678,7 @@ def test_validate_location_in_graph_rejects_empty_graph():
         )
 
 
-# Nearest road node snapping tests
-
-
-def test_snap_location_to_graph_returns_nearest_node(
-    monkeypatch,
-):
+def test_snap_location_to_graph_returns_nearest_node(monkeypatch):
     graph = create_test_graph()
 
     monkeypatch.setattr(
@@ -575,9 +719,7 @@ def test_snap_location_to_graph_rejects_location_outside_graph(
         )
 
 
-def test_snap_location_to_graph_rejects_node_too_far(
-    monkeypatch,
-):
+def test_snap_location_to_graph_rejects_node_too_far(monkeypatch):
     graph = nx.MultiDiGraph()
 
     graph.add_node(1, x=85.3, y=23.3000)
@@ -597,9 +739,7 @@ def test_snap_location_to_graph_rejects_node_too_far(
         )
 
 
-def test_snap_location_to_graph_handles_lookup_failure(
-    monkeypatch,
-):
+def test_snap_location_to_graph_handles_lookup_failure(monkeypatch):
     graph = create_test_graph()
 
     def failed_lookup(*args, **kwargs):
@@ -617,9 +757,6 @@ def test_snap_location_to_graph_handles_lookup_failure(
             (23.3000, 85.3000),
             "Starting location",
         )
-
-
-# Route calculation tests
 
 
 def test_calculate_routes_finds_different_optimal_paths():
@@ -653,9 +790,6 @@ def test_calculate_routes_rejects_missing_path():
             1,
             2,
         )
-
-
-# Real model artifact compatibility test
 
 
 def test_real_safety_model_artifact_loads_and_predicts():
