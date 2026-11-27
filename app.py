@@ -1,5 +1,7 @@
 
 import logging
+from collections import Counter
+from itertools import combinations
 from pathlib import Path
 
 import folium
@@ -98,6 +100,126 @@ def geocode_location(address, city_name):
     )
 
 
+def find_different_route_pair(graph, max_sample_nodes=30):
+    """
+    Inspect a bounded, geographically distributed sample of graph nodes.
+    Return a pair for which shortest and safety-weighted paths differ.
+    """
+
+    if graph is None or graph.number_of_nodes() < 2:
+        return None
+
+    valid_nodes = []
+
+    for node, data in graph.nodes(data=True):
+        try:
+            latitude = float(data["y"])
+            longitude = float(data["x"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        valid_nodes.append(
+            (node, latitude, longitude)
+        )
+
+    if len(valid_nodes) < 2:
+        return None
+
+    valid_nodes.sort(
+        key=lambda item: (item[1], item[2])
+    )
+
+    sample_count = min(
+        max_sample_nodes,
+        len(valid_nodes)
+    )
+
+    if sample_count < len(valid_nodes):
+        indices = [
+            round(
+                index * (len(valid_nodes) - 1)
+                / (sample_count - 1)
+            )
+            for index in range(sample_count)
+        ]
+        sampled_nodes = [
+            valid_nodes[index]
+            for index in indices
+        ]
+    else:
+        sampled_nodes = valid_nodes
+
+    best_candidate = None
+    best_score = None
+
+    for start_info, end_info in combinations(sampled_nodes, 2):
+        start_node = start_info[0]
+        end_node = end_info[0]
+
+        try:
+            routes = calculate_routes(
+                graph,
+                start_node,
+                end_node
+            )
+        except (
+            nx.NetworkXNoPath,
+            nx.NodeNotFound,
+            ValueError
+        ):
+            continue
+
+        shortest_path = routes["shortest_path"]
+        safety_path = routes["safety_path"]
+
+        if shortest_path == safety_path:
+            continue
+
+        shortest_nodes = set(shortest_path)
+        safety_nodes = set(safety_path)
+
+        path_difference = len(
+            shortest_nodes.symmetric_difference(safety_nodes)
+        )
+
+        risk_difference = abs(
+            routes["shortest_metrics"]["high_risk_count"]
+            - routes["safety_metrics"]["high_risk_count"]
+        )
+
+        shortest_distance = routes["shortest_metrics"]["distance"]
+        safety_distance = routes["safety_metrics"]["distance"]
+
+        extra_distance = (
+            safety_distance - shortest_distance
+        )
+
+        score = (
+            path_difference,
+            risk_difference,
+            -extra_distance
+        )
+
+        if best_score is None or score > best_score:
+            best_score = score
+
+            best_candidate = {
+                **routes,
+                "start_node": start_node,
+                "end_node": end_node,
+                "start_coords": (
+                    start_info[1],
+                    start_info[2]
+                ),
+                "end_coords": (
+                    end_info[1],
+                    end_info[2]
+                )
+            }
+
+    return best_candidate
+
+
 st.set_page_config(
     page_title="Optimal Safety Routing",
     layout="wide"
@@ -116,7 +238,8 @@ session_defaults = {
     "city_graph": None,
     "current_city": "",
     "route_result": None,
-    "route_error": None
+    "route_error": None,
+    "diagnostic_message": None
 }
 
 for key, default_value in session_defaults.items():
@@ -139,6 +262,7 @@ if st.sidebar.button("Load Graph (1.5km Radius)"):
     st.session_state.current_city = ""
     st.session_state.route_result = None
     st.session_state.route_error = None
+    st.session_state.diagnostic_message = None
 
     city_input = _clean_location_text(city_input)
 
@@ -223,6 +347,7 @@ if st.session_state.city_graph is not None:
 
         st.session_state.route_result = None
         st.session_state.route_error = None
+        st.session_state.diagnostic_message = None
 
         try:
             query = LocationQuerySchema(
@@ -328,6 +453,110 @@ else:
     )
 
 
+# Route diagnostics
+
+st.markdown("---")
+st.markdown("## 3. Route Testing / Diagnostics")
+
+if st.session_state.city_graph is not None:
+
+    graph = st.session_state.city_graph
+
+    st.write(
+        "Automatically inspect selected points inside the loaded "
+        "road network and search for a pair where the shortest "
+        "and safety-weighted paths are different."
+    )
+
+    risk_counts = Counter(
+        str(data.get("risk_class", "Unknown"))
+        for _, _, _, data in graph.edges(
+            keys=True,
+            data=True
+        )
+    )
+
+    st.markdown("**Model risk-class distribution in the loaded graph**")
+
+    risk_columns = st.columns(max(1, len(risk_counts)))
+
+    for index, (risk_class, count) in enumerate(
+        sorted(risk_counts.items())
+    ):
+        with risk_columns[index]:
+            st.metric(
+                risk_class,
+                count
+            )
+
+    if st.button("Find a Route with Different Paths"):
+
+        st.session_state.route_result = None
+        st.session_state.route_error = None
+        st.session_state.diagnostic_message = None
+
+        with st.spinner(
+            "Inspecting the loaded graph and comparing candidate routes..."
+        ):
+            try:
+                candidate = find_different_route_pair(graph)
+
+                if candidate is None:
+                    st.session_state.diagnostic_message = (
+                        "No different shortest and safety-weighted "
+                        "paths were found among the sampled nodes. "
+                        "This may mean the current graph has similar "
+                        "risk costs across its roads, or the sampled "
+                        "pairs do not have useful alternative paths."
+                    )
+
+                else:
+                    st.session_state.route_result = {
+                        **candidate,
+                        "start_address": (
+                            f"Diagnostic graph node "
+                            f"{candidate['start_node']}"
+                        ),
+                        "end_address": (
+                            f"Diagnostic graph node "
+                            f"{candidate['end_node']}"
+                        ),
+                        "city_name": st.session_state.current_city,
+                        "start_snap_distance": 0.0,
+                        "end_snap_distance": 0.0
+                    }
+
+                    st.session_state.diagnostic_message = (
+                        "A pair with different shortest and "
+                        "safety-weighted paths was found."
+                    )
+
+            except Exception:
+                logger.exception(
+                    "Route diagnostics failed"
+                )
+
+                st.session_state.diagnostic_message = (
+                    "Diagnostics could not complete. Please check "
+                    "the application logs."
+                )
+
+    if st.session_state.diagnostic_message:
+        if st.session_state.route_result is not None:
+            st.success(
+                st.session_state.diagnostic_message
+            )
+        else:
+            st.warning(
+                st.session_state.diagnostic_message
+            )
+
+else:
+    st.info(
+        "Load a city graph first to use route diagnostics."
+    )
+
+
 # Main page: Display errors
 
 if st.session_state.route_error:
@@ -374,6 +603,11 @@ if (
 
     with col1:
         st.metric(
+            "Shortest Route Distance",
+            f"{shortest_metrics['distance']:.1f} m"
+        )
+
+        st.metric(
             "Safety-Weighted Route Distance",
             f"{safety_metrics['distance']:.1f} m",
             delta=f"{distance_difference:+.1f} m vs Shortest",
@@ -382,7 +616,12 @@ if (
 
     with col2:
         st.metric(
-            "Average Lighting Proxy",
+            "Shortest Route Lighting Proxy",
+            f"{shortest_metrics['avg_lux']:.1f}"
+        )
+
+        st.metric(
+            "Safety Route Lighting Proxy",
             f"{safety_metrics['avg_lux']:.1f}",
             delta=f"{lighting_difference:+.1f} vs Shortest",
             delta_color="normal"
@@ -390,7 +629,12 @@ if (
 
     with col3:
         st.metric(
-            "High-Risk Segments",
+            "Shortest Route High-Risk Segments",
+            shortest_metrics["high_risk_count"]
+        )
+
+        st.metric(
+            "Safety Route High-Risk Segments",
             safety_metrics["high_risk_count"],
             delta=f"{risk_difference:+d} vs Shortest",
             delta_color="inverse"
@@ -449,15 +693,6 @@ st.caption(
     "Users should exercise personal judgment."
 )
 
-
-
-
-
-
-
-
-
-    
 
 
 
