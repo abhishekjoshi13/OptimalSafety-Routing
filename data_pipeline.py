@@ -5,6 +5,7 @@ import math
 import os
 from pathlib import Path
 
+import geopandas as gpd
 import joblib
 import networkx as nx
 import osmnx as osmx
@@ -30,14 +31,12 @@ osmx.settings.timeout = 180
 osmx.settings.requests_timeout = 60
 osmx.settings.use_cache = True
 osmx.settings.overpass_rate_limit = False
-
 osmx.settings.overpass_url = LIVE_OVERPASS_ENDPOINTS[0]
 
 osmx.settings.http_user_agent = (
     "OptimalSafetyRouting/1.0 "
     "(https://github.com/abhishekjoshi13/OptimalSafety-Routing)"
 )
-
 
 FEATURE_COLUMNS = [
     "length",
@@ -49,34 +48,102 @@ FEATURE_COLUMNS = [
 ]
 
 
+def _get_city_boundary(city_name):
+    if not isinstance(city_name, str) or not city_name.strip():
+        raise ValueError("A valid city name is required")
+
+    normalized_city = city_name.strip()
+
+    logger.info(
+        "Retrieving geographic boundary for: %s",
+        normalized_city,
+    )
+
+    try:
+        boundary_gdf = osmx.geocode_to_gdf(
+            normalized_city,
+            which_result=1,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not retrieve the geographic boundary for "
+            f"'{normalized_city}'. Check the city name and geocoding "
+            "service availability."
+        ) from exc
+
+    if (
+        boundary_gdf is None
+        or boundary_gdf.empty
+        or "geometry" not in boundary_gdf.columns
+    ):
+        raise ValueError(
+            f"No geographic boundary was found for '{normalized_city}'"
+        )
+
+    if boundary_gdf.crs is None:
+        raise ValueError(
+            "The city boundary does not have a defined coordinate system"
+        )
+
+    boundary_gdf = boundary_gdf.to_crs(epsg=4326)
+
+    geometries = [
+        geometry
+        for geometry in boundary_gdf.geometry
+        if geometry is not None
+        and not geometry.is_empty
+        and geometry.is_valid
+        and geometry.geom_type in ("Polygon", "MultiPolygon")
+    ]
+
+    if not geometries:
+        raise ValueError(
+            f"No valid city polygon was found for '{normalized_city}'"
+        )
+
+    city_polygon = gpd.GeoSeries(
+        geometries,
+        crs="EPSG:4326",
+    ).union_all()
+
+    if city_polygon.is_empty or not city_polygon.is_valid:
+        raise ValueError(
+            "The retrieved city boundary is invalid"
+        )
+
+    if city_polygon.geom_type not in ("Polygon", "MultiPolygon"):
+        raise ValueError(
+            "The retrieved boundary is not a usable city polygon"
+        )
+
+    if city_polygon.area <= 0:
+        raise ValueError(
+            "The retrieved city boundary has no usable area"
+        )
+
+    logger.info(
+        "City boundary retrieved successfully. Geometry type: %s",
+        city_polygon.geom_type,
+    )
+
+    return city_polygon
+
+
 def _get_graph_center(city_name):
     normalized_city = city_name.lower()
 
     if "lalpur" in normalized_city and "ranchi" in normalized_city:
         center_point = LALPUR_RANCHI_CENTER
-        logger.info(
-            "Using Lalpur, Ranchi anchor coordinates: %s",
-            center_point,
-        )
     else:
-        logger.info(
-            "Geocoding requested city or area: %s",
-            city_name,
-        )
-        center_point = osmx.geocode(city_name.strip())
+        city_polygon = _get_city_boundary(city_name)
+        representative_point = city_polygon.representative_point()
 
-    if (
-        not isinstance(center_point, (tuple, list))
-        or len(center_point) != 2
-    ):
-        raise ValueError(
-            "Geocoding did not return valid coordinates"
+        center_point = (
+            float(representative_point.y),
+            float(representative_point.x),
         )
 
     latitude, longitude = center_point
-
-    latitude = float(latitude)
-    longitude = float(longitude)
 
     if not (
         math.isfinite(latitude)
@@ -85,14 +152,8 @@ def _get_graph_center(city_name):
         and -180 <= longitude <= 180
     ):
         raise ValueError(
-            "Geocoding returned out-of-range coordinates"
+            "The city boundary produced invalid centre coordinates"
         )
-
-    logger.info(
-        "Using graph centre: latitude=%s, longitude=%s",
-        latitude,
-        longitude,
-    )
 
     return latitude, longitude
 
@@ -193,7 +254,7 @@ def _validate_road_graph(graph, source_name):
     return graph
 
 
-def _download_live_graph(center_point, city_name):
+def _download_live_graph(city_polygon, city_name):
     original_endpoint = osmx.settings.overpass_url
     endpoint_errors = []
 
@@ -201,17 +262,20 @@ def _download_live_graph(center_point, city_name):
         for endpoint in LIVE_OVERPASS_ENDPOINTS:
             try:
                 logger.info(
-                    "Trying live OSM download for '%s' using %s",
+                    "Downloading complete city road network for '%s' "
+                    "using %s",
                     city_name,
                     endpoint,
                 )
 
                 osmx.settings.overpass_url = endpoint
 
-                graph = osmx.graph_from_point(
-                    center_point,
-                    dist=GRAPH_RADIUS_METERS,
+                graph = osmx.graph_from_polygon(
+                    city_polygon,
                     network_type="walk",
+                    simplify=True,
+                    retain_all=False,
+                    truncate_by_edge=True,
                 )
 
                 graph = _validate_road_graph(
@@ -222,11 +286,10 @@ def _download_live_graph(center_point, city_name):
                 graph.graph["data_source"] = "OpenStreetMap"
                 graph.graph["overpass_endpoint"] = endpoint
                 graph.graph["requested_location"] = city_name
+                graph.graph["coverage_type"] = "city_boundary"
 
                 logger.info(
-                    "Live OSM download succeeded using %s: "
-                    "%s nodes and %s edges",
-                    endpoint,
+                    "City-wide graph downloaded: %s nodes, %s edges",
                     graph.number_of_nodes(),
                     graph.number_of_edges(),
                 )
@@ -247,11 +310,9 @@ def _download_live_graph(center_point, city_name):
     finally:
         osmx.settings.overpass_url = original_endpoint
 
-    error_summary = " | ".join(endpoint_errors)
-
     raise RuntimeError(
-        "All configured OpenStreetMap Overpass endpoints failed. "
-        f"Endpoint errors: {error_summary}"
+        "All configured OpenStreetMap endpoints failed. "
+        + " | ".join(endpoint_errors)
     )
 
 
@@ -262,11 +323,6 @@ def _load_backup_graph(center_point, backup_graph_path):
         raise FileNotFoundError(
             "No local backup road graph is available"
         )
-
-    logger.warning(
-        "Checking local backup graph: %s",
-        backup_graph_path.name,
-    )
 
     graph = osmx.load_graphml(
         filepath=backup_graph_path
@@ -290,8 +346,6 @@ def _load_backup_graph(center_point, backup_graph_path):
         if not (
             math.isfinite(latitude)
             and math.isfinite(longitude)
-            and -90 <= latitude <= 90
-            and -180 <= longitude <= 180
         ):
             continue
 
@@ -307,19 +361,15 @@ def _load_backup_graph(center_point, backup_graph_path):
 
     if len(nearby_nodes) < 2:
         raise ValueError(
-            "The local backup graph does not cover the requested "
-            "location. A geographically matching backup is required. "
-            f"The requested centre is {center_lat:.6f}, "
-            f"{center_lon:.6f}; the allowed radius is "
-            f"{GRAPH_RADIUS_METERS} metres."
+            "The available backup graph does not cover this location "
+            "within its configured 1.5 km radius."
         )
 
     local_graph = graph.subgraph(nearby_nodes).copy()
 
     if local_graph.number_of_edges() == 0:
         raise ValueError(
-            "The backup graph has no road connections "
-            "inside the requested area"
+            "The matching backup area contains no road connections"
         )
 
     components = list(
@@ -366,14 +416,7 @@ def _load_backup_graph(center_point, backup_graph_path):
         data["length"] = edge_length
 
     local_graph.graph["data_source"] = "Local backup GraphML"
-    local_graph.graph["backup_graph"] = backup_graph_path.name
-
-    logger.info(
-        "Geographically matching backup loaded: "
-        "%s nodes and %s edges",
-        local_graph.number_of_nodes(),
-        local_graph.number_of_edges(),
-    )
+    local_graph.graph["coverage_type"] = "local_backup"
 
     return local_graph
 
@@ -415,10 +458,8 @@ def _add_model_predictions(graph, model_path):
 
         if prediction == "Moderate":
             multiplier = 2.5
-
         elif prediction == "High Risk":
             multiplier = 6.0
-
         else:
             multiplier = 1.0
 
@@ -429,11 +470,9 @@ def _add_model_predictions(graph, model_path):
         )
 
         graph[u][v][key]["risk_class"] = prediction
-
         graph[u][v][key]["lux_level"] = (
             edge_features["luxLevel"]
         )
-
         graph[u][v][key]["police_dist"] = (
             edge_features["policeDist"]
         )
@@ -454,7 +493,7 @@ def build_dynamic_safety_graph(
 
     if not isinstance(city_name, str) or not city_name.strip():
         raise ValueError(
-            "A valid city or area name is required"
+            "A valid city name is required"
         )
 
     if not isinstance(model_path, str) or not model_path.strip():
@@ -472,15 +511,20 @@ def build_dynamic_safety_graph(
     if backup_graph_path is None:
         backup_graph_path = BACKUP_GRAPH_PATH
 
-    # Geocoding is performed first because the same verified
-    # coordinates are required for both live and backup sources.
-    center_point = _get_graph_center(city_name)
+    city_polygon = _get_city_boundary(city_name)
+
+    representative_point = city_polygon.representative_point()
+
+    center_point = (
+        float(representative_point.y),
+        float(representative_point.x),
+    )
 
     live_error = None
 
     try:
         graph = _download_live_graph(
-            center_point,
+            city_polygon,
             city_name,
         )
 
@@ -488,8 +532,7 @@ def build_dynamic_safety_graph(
         live_error = exc
 
         logger.warning(
-            "Live OSM download failed for '%s'. "
-            "Checking geographically matching backup. Reason: %s",
+            "Live city-wide OSM download failed for '%s': %s",
             city_name,
             exc,
         )
@@ -502,15 +545,14 @@ def build_dynamic_safety_graph(
 
         except Exception as backup_error:
             logger.exception(
-                "No usable geographically matching backup was found"
+                "No geographically matching backup was found"
             )
 
             raise RuntimeError(
                 f"Could not load the road network for '{city_name}'. "
-                "Live OpenStreetMap download failed, and the available "
-                "local backup does not cover this location. "
-                "Please try again later or use a location with "
-                "available map data. "
+                "The complete city-wide OpenStreetMap download failed, "
+                "and the available local backup does not cover the "
+                "requested city. "
                 f"Live OSM error: {live_error}. "
                 f"Backup error: {backup_error}."
             ) from backup_error
