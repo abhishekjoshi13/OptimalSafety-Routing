@@ -129,13 +129,15 @@ def _get_city_boundary(city_name):
     return city_polygon
 
 
-def _get_graph_center(city_name):
+def _get_graph_center(city_name, city_polygon=None):
     normalized_city = city_name.lower()
 
     if "lalpur" in normalized_city and "ranchi" in normalized_city:
         center_point = LALPUR_RANCHI_CENTER
     else:
-        city_polygon = _get_city_boundary(city_name)
+        if city_polygon is None:
+            city_polygon = _get_city_boundary(city_name)
+
         representative_point = city_polygon.representative_point()
 
         center_point = (
@@ -513,11 +515,9 @@ def build_dynamic_safety_graph(
 
     city_polygon = _get_city_boundary(city_name)
 
-    representative_point = city_polygon.representative_point()
-
-    center_point = (
-        float(representative_point.y),
-        float(representative_point.x),
+    center_point = _get_graph_center(
+        city_name,
+        city_polygon,
     )
 
     live_error = None
