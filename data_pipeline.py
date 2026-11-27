@@ -1,3 +1,4 @@
+
 import ast
 import logging
 import math
@@ -17,9 +18,6 @@ BASE_DIR = Path(__file__).resolve().parent
 BACKUP_GRAPH_PATH = BASE_DIR / "city_map.graphml.gz"
 
 GRAPH_RADIUS_METERS = 1500
-
-# OSMnx subdivides large polygon queries into smaller areas.
-# 25 km² keeps individual Overpass requests more manageable.
 OVERPASS_TILE_AREA_M2 = 25_000_000
 
 LALPUR_RANCHI_CENTER = (23.3721, 85.3383)
@@ -29,8 +27,6 @@ LIVE_OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api",
     "https://overpass.kumi.systems/api",
 ]
-
-GEOCODING_RESULT_LIMIT = 5
 
 osmx.settings.timeout = 180
 osmx.settings.requests_timeout = 210
@@ -54,45 +50,40 @@ FEATURE_COLUMNS = [
 ]
 
 
-def _get_city_query_variants(city_name):
-    normalized = city_name.strip()
-    lower_name = normalized.lower()
+def _is_ranchi(city_name):
+    return "ranchi" in city_name.casefold()
 
-    if "ranchi" in lower_name:
-        variants = [
-            normalized,
-            "Ranchi, Jharkhand, India",
-            "Ranchi, India",
-            "Ranchi, Jharkhand",
-            "Ranchi",
-        ]
 
-    elif "patna" in lower_name:
-        variants = [
-            normalized,
-            "Patna, Bihar, India",
-            "Patna, Bihar",
-            "Patna, India",
-            "Patna",
-        ]
+def _get_city_boundary(city_name):
+    if not isinstance(city_name, str) or not city_name.strip():
+        raise ValueError("A valid city name is required")
 
-    else:
-        variants = [
-            normalized,
-            f"{normalized}, India",
-        ]
+    normalized_city = city_name.strip()
 
-    unique_variants = []
-    seen = set()
+    logger.info(
+        "Retrieving geographic boundary for: %s",
+        normalized_city,
+    )
 
-    for variant in variants:
-        key = variant.casefold()
+    boundary_gdf = osmx.geocode_to_gdf(normalized_city)
 
-        if key not in seen:
-            seen.add(key)
-            unique_variants.append(variant)
+    city_polygon = _validate_city_polygon(
+        boundary_gdf,
+        normalized_city,
+    )
 
-    return unique_variants
+    if city_polygon is None:
+        raise ValueError(
+            f"No valid geographic polygon was found for '{normalized_city}'"
+        )
+
+    logger.info(
+        "Geographic boundary retrieved for '%s'. Geometry: %s",
+        normalized_city,
+        city_polygon.geom_type,
+    )
+
+    return city_polygon
 
 
 def _validate_city_polygon(boundary_gdf, city_name):
@@ -105,7 +96,7 @@ def _validate_city_polygon(boundary_gdf, city_name):
 
     if boundary_gdf.crs is None:
         logger.warning(
-            "Geocoding result for '%s' has no CRS",
+            "Boundary for '%s' has no coordinate reference system",
             city_name,
         )
         return None
@@ -114,7 +105,7 @@ def _validate_city_polygon(boundary_gdf, city_name):
         boundary_gdf = boundary_gdf.to_crs(epsg=4326)
     except Exception:
         logger.exception(
-            "Could not convert geocoding result to EPSG:4326"
+            "Could not convert boundary to EPSG:4326"
         )
         return None
 
@@ -137,10 +128,7 @@ def _validate_city_polygon(boundary_gdf, city_name):
                     part is not None
                     and not part.is_empty
                     and part.is_valid
-                    and part.geom_type in (
-                        "Polygon",
-                        "MultiPolygon",
-                    )
+                    and part.geom_type in ("Polygon", "MultiPolygon")
                 ):
                     geometries.append(part)
 
@@ -154,17 +142,14 @@ def _validate_city_polygon(boundary_gdf, city_name):
         ).union_all()
     except Exception:
         logger.exception(
-            "Could not combine city boundary geometries"
+            "Could not combine boundary geometries"
         )
         return None
 
     if (
         city_polygon.is_empty
         or not city_polygon.is_valid
-        or city_polygon.geom_type not in (
-            "Polygon",
-            "MultiPolygon",
-        )
+        or city_polygon.geom_type not in ("Polygon", "MultiPolygon")
         or city_polygon.area <= 0
     ):
         return None
@@ -172,89 +157,36 @@ def _validate_city_polygon(boundary_gdf, city_name):
     return city_polygon
 
 
-def _get_city_boundary(city_name):
-    if not isinstance(city_name, str) or not city_name.strip():
-        raise ValueError("A valid city name is required")
-
-    query_variants = _get_city_query_variants(city_name)
-    geocoding_errors = []
-
-    logger.info(
-        "Retrieving geographic boundary for: %s",
-        city_name,
-    )
-
-    for query in query_variants:
-        try:
-            logger.info(
-                "Trying city boundary query: %s",
-                query,
-            )
-
-            boundary_gdf = osmx.geocode_to_gdf(query)
-
-            city_polygon = _validate_city_polygon(
-                boundary_gdf,
-                city_name,
-            )
-
-            if city_polygon is None:
-                logger.warning(
-                    "No valid polygon found for query: %s",
-                    query,
-                )
-                continue
-
-            logger.info(
-                "Valid city polygon retrieved for '%s' "
-                "using query '%s'. Geometry: %s",
-                city_name,
-                query,
-                city_polygon.geom_type,
-            )
-
-            return city_polygon
-
-        except Exception as exc:
-            geocoding_errors.append(
-                f"{query}: {exc}"
-            )
-
-            logger.warning(
-                "Boundary lookup failed for '%s': %s",
-                query,
-                exc,
-            )
-
-    error_details = " | ".join(geocoding_errors[-5:])
-
-    raise RuntimeError(
-        f"No valid city boundary could be retrieved for "
-        f"'{city_name}'. Tried multiple search queries. "
-        f"{error_details}"
-    )
-
-
 def _get_graph_center(city_name, city_polygon=None):
-    normalized_city = city_name.lower()
-
-    if "ranchi" in normalized_city:
+    if _is_ranchi(city_name):
         center_point = LALPUR_RANCHI_CENTER
 
-    else:
-        if city_polygon is None:
-            city_polygon = _get_city_boundary(city_name)
-
-        representative_point = (
-            city_polygon.representative_point()
-        )
-
+    elif city_polygon is not None:
+        representative_point = city_polygon.representative_point()
         center_point = (
             float(representative_point.y),
             float(representative_point.x),
         )
 
+    else:
+        logger.info(
+            "Geocoding city centre for radius-based graph: %s",
+            city_name,
+        )
+        center_point = osmx.geocode(city_name.strip())
+
+    if (
+        not isinstance(center_point, (tuple, list))
+        or len(center_point) != 2
+    ):
+        raise ValueError(
+            "Geocoding did not return valid centre coordinates"
+        )
+
     latitude, longitude = center_point
+
+    latitude = float(latitude)
+    longitude = float(longitude)
 
     if not (
         math.isfinite(latitude)
@@ -263,7 +195,7 @@ def _get_graph_center(city_name, city_polygon=None):
         and -180 <= longitude <= 180
     ):
         raise ValueError(
-            "The city boundary produced invalid centre coordinates"
+            "Geocoding returned invalid centre coordinates"
         )
 
     return latitude, longitude
@@ -365,30 +297,22 @@ def _validate_road_graph(graph, source_name):
     return graph
 
 
-def _download_live_graph(city_polygon, city_name):
+def _download_from_endpoints(download_function, city_name):
     original_endpoint = osmx.settings.overpass_url
     endpoint_errors = []
 
     try:
         for endpoint in LIVE_OVERPASS_ENDPOINTS:
             try:
-                logger.info(
-                    "Downloading complete city road network "
-                    "for '%s' using %s. Maximum query area: %s m²",
-                    city_name,
-                    endpoint,
-                    OVERPASS_TILE_AREA_M2,
-                )
-
                 osmx.settings.overpass_url = endpoint
 
-                graph = osmx.graph_from_polygon(
-                    city_polygon,
-                    network_type="walk",
-                    simplify=True,
-                    retain_all=False,
-                    truncate_by_edge=True,
+                logger.info(
+                    "Trying OSM download for '%s' using %s",
+                    city_name,
+                    endpoint,
                 )
+
+                graph = download_function()
 
                 graph = _validate_road_graph(
                     graph,
@@ -398,10 +322,10 @@ def _download_live_graph(city_polygon, city_name):
                 graph.graph["data_source"] = "OpenStreetMap"
                 graph.graph["overpass_endpoint"] = endpoint
                 graph.graph["requested_location"] = city_name
-                graph.graph["coverage_type"] = "city_boundary"
 
                 logger.info(
-                    "City-wide graph downloaded: %s nodes, %s edges",
+                    "OSM graph loaded using %s: %s nodes, %s edges",
+                    endpoint,
                     graph.number_of_nodes(),
                     graph.number_of_edges(),
                 )
@@ -426,6 +350,45 @@ def _download_live_graph(city_polygon, city_name):
         "All configured OpenStreetMap endpoints failed. "
         + " | ".join(endpoint_errors)
     )
+
+
+def _download_live_graph(center_point, city_name):
+    def download():
+        return osmx.graph_from_point(
+            center_point,
+            dist=GRAPH_RADIUS_METERS,
+            network_type="walk",
+        )
+
+    graph = _download_from_endpoints(
+        download,
+        city_name,
+    )
+
+    graph.graph["coverage_type"] = "city_radius"
+    graph.graph["coverage_radius_meters"] = GRAPH_RADIUS_METERS
+
+    return graph
+
+
+def _download_city_boundary_graph(city_polygon, city_name):
+    def download():
+        return osmx.graph_from_polygon(
+            city_polygon,
+            network_type="walk",
+            simplify=True,
+            retain_all=False,
+            truncate_by_edge=True,
+        )
+
+    graph = _download_from_endpoints(
+        download,
+        city_name,
+    )
+
+    graph.graph["coverage_type"] = "city_boundary"
+
+    return graph
 
 
 def _load_backup_graph(center_point, backup_graph_path):
@@ -458,6 +421,8 @@ def _load_backup_graph(center_point, backup_graph_path):
         if not (
             math.isfinite(latitude)
             and math.isfinite(longitude)
+            and -90 <= latitude <= 90
+            and -180 <= longitude <= 180
         ):
             continue
 
@@ -474,7 +439,7 @@ def _load_backup_graph(center_point, backup_graph_path):
     if len(nearby_nodes) < 2:
         raise ValueError(
             "The available backup graph does not cover this location "
-            "within its configured 1.5 km radius."
+            f"within its configured {GRAPH_RADIUS_METERS} metre radius."
         )
 
     local_graph = graph.subgraph(nearby_nodes).copy()
@@ -502,8 +467,7 @@ def _load_backup_graph(center_point, backup_graph_path):
         or local_graph.number_of_edges() == 0
     ):
         raise ValueError(
-            "The matching backup area has no usable connected "
-            "road network"
+            "The matching backup area has no usable connected road network"
         )
 
     for node, data in local_graph.nodes(data=True):
@@ -607,7 +571,7 @@ def build_dynamic_safety_graph(
 
     if not isinstance(city_name, str) or not city_name.strip():
         raise ValueError(
-            "A valid city name is required"
+            "A valid city or area name is required"
         )
 
     if not isinstance(model_path, str) or not model_path.strip():
@@ -625,47 +589,23 @@ def build_dynamic_safety_graph(
     if backup_graph_path is None:
         backup_graph_path = BACKUP_GRAPH_PATH
 
-    is_ranchi = "ranchi" in city_name.lower()
-
-    city_polygon = None
-    boundary_error = None
-
-    try:
-        city_polygon = _get_city_boundary(city_name)
-
-    except Exception as exc:
-        boundary_error = exc
-
-        logger.warning(
-            "City boundary retrieval failed for '%s': %s",
-            city_name,
-            exc,
-        )
-
-        if not is_ranchi:
-            raise RuntimeError(
-                f"Could not retrieve a valid geographic boundary "
-                f"for '{city_name}'. "
-                f"Details: {boundary_error}"
-            ) from boundary_error
-
-    if city_polygon is not None:
-        center_point = _get_graph_center(
-            city_name,
-            city_polygon,
-        )
-    elif is_ranchi:
-        center_point = LALPUR_RANCHI_CENTER
-    else:
-        raise RuntimeError(
-            f"Could not determine the geographic centre for '{city_name}'"
-        )
-
     live_error = None
+    graph = None
 
-    if city_polygon is not None:
+    if _is_ranchi(city_name):
+        logger.info(
+            "Ranchi detected: attempting city-boundary graph loading"
+        )
+
         try:
-            graph = _download_live_graph(
+            city_polygon = _get_city_boundary(city_name)
+
+            center_point = _get_graph_center(
+                city_name,
+                city_polygon,
+            )
+
+            graph = _download_city_boundary_graph(
                 city_polygon,
                 city_name,
             )
@@ -674,24 +614,45 @@ def build_dynamic_safety_graph(
             live_error = exc
 
             logger.warning(
-                "Live city-wide OSM download failed for '%s': %s",
+                "Ranchi city-boundary graph could not be loaded: %s",
+                exc,
+            )
+
+            center_point = LALPUR_RANCHI_CENTER
+
+    else:
+        logger.info(
+            "Non-Ranchi city detected: using centre-based "
+            "%s metre road-network loading",
+            GRAPH_RADIUS_METERS,
+        )
+
+        center_point = _get_graph_center(city_name)
+
+        try:
+            graph = _download_live_graph(
+                center_point,
+                city_name,
+            )
+
+        except Exception as exc:
+            live_error = exc
+
+            logger.warning(
+                "Centre-based OSM graph loading failed for '%s': %s",
                 city_name,
                 exc,
             )
 
-            graph = None
-    else:
-        live_error = boundary_error
-        graph = None
-
     if graph is None:
-        try:
-            if not is_ranchi:
-                raise ValueError(
-                    "The local Ranchi backup must not be used "
-                    "for another city."
-                )
+        if not _is_ranchi(city_name):
+            raise RuntimeError(
+                f"Could not load the road network for '{city_name}'. "
+                "The centre-based OpenStreetMap download failed. "
+                f"Details: {live_error}"
+            ) from live_error
 
+        try:
             graph = _load_backup_graph(
                 center_point,
                 backup_graph_path,
@@ -699,12 +660,12 @@ def build_dynamic_safety_graph(
 
         except Exception as backup_error:
             logger.exception(
-                "No usable road graph could be loaded"
+                "No usable Ranchi backup graph could be loaded"
             )
 
             raise RuntimeError(
                 f"Could not load the road network for '{city_name}'. "
-                f"Live boundary/OSM error: {live_error}. "
+                f"Live city-boundary error: {live_error}. "
                 f"Backup error: {backup_error}."
             ) from backup_error
 
@@ -714,9 +675,10 @@ def build_dynamic_safety_graph(
     )
 
     logger.info(
-        "Road graph ready for '%s'. Source: %s",
+        "Road graph ready for '%s'. Source: %s. Coverage: %s",
         city_name,
         graph.graph.get("data_source", "Unknown"),
+        graph.graph.get("coverage_type", "Unknown"),
     )
 
     return graph
@@ -752,8 +714,7 @@ def extract_path_metrics(
     for u, v in zip(path[:-1], path[1:]):
         if not graph.has_edge(u, v):
             raise ValueError(
-                "The supplied path contains an edge not present "
-                "in the graph"
+                "The supplied path contains an edge not present in the graph"
             )
 
         parallel_edges = graph[u][v]
