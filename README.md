@@ -36,7 +36,7 @@ The application is an experimental decision-support tool. It does not guarantee 
 | Graph representation and routing | NetworkX |
 | Machine learning | Scikit-learn |
 | Data processing | Pandas, NumPy |
-| Interactive maps | Folium, GeoPandas, Streamlit-Folium |
+| Interactive maps | Folium, Streamlit-Folium |
 | Input validation | Pydantic |
 | Model serialization | Joblib |
 | Automated testing | Pytest |
@@ -57,6 +57,12 @@ The application validates the returned coordinates before attempting to match th
 The data pipeline retrieves a walkable OpenStreetMap network within a 1,500-metre radius around the selected area.
 
 The resulting network is represented as a NetworkX directed multigraph.
+
+For Ranchi, the configured network centre is in Lalpur. Other locations use geocoded centre coordinates.
+
+The application tries multiple public Overpass endpoints to retrieve live OpenStreetMap data.
+
+**Ranchi-only fallback:** If live OSM retrieval fails for Ranchi, the application can attempt to load the local `city_map.graphml.gz` backup. This backup is not configured for Patna or other cities.
 
 ### 3. Feature Engineering and Risk Prediction
 
@@ -149,7 +155,7 @@ cd OptimalSafety-Routing
 Install application dependencies:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 Run the application:
@@ -167,7 +173,7 @@ The project uses Pytest for automated testing.
 Install the development dependencies:
 
 ```bash
-pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.txt
 ```
 
 Run the test suite:
@@ -189,7 +195,13 @@ The workflow:
 3. Installs locked development dependencies.
 4. Executes `pytest -v`.
 
-The current verified baseline contains 47 passing test cases.
+**Latest verified test baseline: 50 passing tests.**
+
+The latest verified CI run completed successfully on November 27, 2026.
+
+[View GitHub Actions test run](https://github.com/abhishekjoshi13/OptimalSafety-Routing/actions/runs/46015220597)
+
+Note: Automated tests use mocked network retrieval for the OSM-dependent routing tests. Passing CI tests do not guarantee that public Overpass endpoints will be available at runtime.
 
 ## Model and Data Considerations
 
@@ -199,7 +211,7 @@ Only load model artifacts from trusted sources. Joblib uses Python serialization
 
 The application retrieves street-network information dynamically through OSMnx. Data availability depends on OpenStreetMap coverage, network access and geocoding results.
 
-The repository also contains a GraphML network file and a Jupyter notebook. The current Streamlit application builds its road graph dynamically rather than using the GraphML file as its primary graph source.
+The repository also contains a GraphML network file and a Jupyter notebook. The current Streamlit application builds its road graph dynamically rather than using the GraphML file as its primary graph source. The GraphML file is configured as a fallback for Ranchi only.
 
 ## Limitations
 
@@ -210,6 +222,7 @@ The repository also contains a GraphML network file and a Jupyter notebook. The 
 - The application does not establish that predicted risk categories correspond to actual crime incidence.
 - A 1,500-metre extraction radius may not cover every requested start and destination.
 - Geocoding and OpenStreetMap coverage can affect route generation.
+- Public Overpass services can experience timeouts, rate limits or temporary unavailability.
 - The 250-metre snapping threshold is an application-level configuration, not a guarantee that a location is correctly represented.
 
 Model outputs should therefore be treated as experimental estimates, not validated real-world safety assessments.
