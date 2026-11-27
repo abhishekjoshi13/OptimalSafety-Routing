@@ -28,6 +28,74 @@ logger = logging.getLogger(__name__)
 MODEL_PATH = Path(__file__).resolve().parent / "safety_model.joblib"
 
 
+def _clean_location_text(value):
+    return " ".join(value.strip().split())
+
+
+def geocode_location(address, city_name):
+    address = _clean_location_text(address)
+    city_name = _clean_location_text(city_name)
+
+    city_lower = city_name.lower()
+    address_lower = address.lower()
+
+    candidates = [
+        address,
+        f"{address}, {city_name}",
+    ]
+
+    if "ranchi" in city_lower or "ranchi" in address_lower:
+        candidates.extend([
+            f"{address}, Ranchi, Jharkhand, India",
+            f"{address}, Lalpur, Ranchi, Jharkhand, India",
+        ])
+    else:
+        candidates.extend([
+            f"{address}, {city_name}, India",
+        ])
+
+    unique_candidates = []
+    seen = set()
+
+    for candidate in candidates:
+        candidate = _clean_location_text(candidate)
+        normalized = candidate.lower()
+
+        if normalized not in seen:
+            seen.add(normalized)
+            unique_candidates.append(candidate)
+
+    errors = []
+
+    for candidate in unique_candidates:
+        try:
+            logger.info("Trying geocoding query: %s", candidate)
+
+            coordinates = ox.geocode(candidate)
+
+            coordinates = validate_coordinates(coordinates)
+
+            logger.info(
+                "Location geocoded successfully using: %s",
+                candidate
+            )
+
+            return coordinates
+
+        except Exception as exc:
+            logger.warning(
+                "Geocoding attempt failed for '%s': %s",
+                candidate,
+                exc
+            )
+            errors.append(candidate)
+
+    raise ValueError(
+        f"Could not locate '{address}'. "
+        "Please try a more specific location name or nearby landmark."
+    )
+
+
 st.set_page_config(
     page_title="Optimal Safety Routing",
     layout="wide"
@@ -70,7 +138,7 @@ if st.sidebar.button("Load Graph (1.5km Radius)"):
     st.session_state.route_result = None
     st.session_state.route_error = None
 
-    city_input = city_input.strip()
+    city_input = _clean_location_text(city_input)
 
     if not 2 <= len(city_input) <= 120:
         st.sidebar.error(
@@ -115,6 +183,7 @@ if st.sidebar.button("Load Graph (1.5km Radius)"):
 
 
 if st.session_state.city_graph is not None:
+
     st.sidebar.success(
         f"Loaded region: {st.session_state.current_city}"
     )
@@ -135,11 +204,13 @@ if st.session_state.city_graph is not None:
     with st.sidebar.form("route_form"):
 
         start_input = st.text_input(
-            "Start Location (e.g., Nucleus Mall)"
+            "Start Location",
+            value="Nucleus Mall"
         )
 
         end_input = st.text_input(
-            "Destination (e.g., Lalpur Chowk)"
+            "Destination",
+            value="Lalpur Chowk"
         )
 
         generate_route = st.form_submit_button(
@@ -158,22 +229,16 @@ if st.session_state.city_graph is not None:
                 end_address=end_input
             )
 
-            with st.spinner("Geocoding addresses..."):
+            with st.spinner("Finding both locations..."):
 
-                start_coords = ox.geocode(
-                    f"{query.start_address}, {query.city_name}"
+                start_coords = geocode_location(
+                    query.start_address,
+                    query.city_name
                 )
 
-                end_coords = ox.geocode(
-                    f"{query.end_address}, {query.city_name}"
-                )
-
-                start_coords = validate_coordinates(
-                    start_coords
-                )
-
-                end_coords = validate_coordinates(
-                    end_coords
+                end_coords = geocode_location(
+                    query.end_address,
+                    query.city_name
                 )
 
                 graph = st.session_state.city_graph
@@ -243,12 +308,15 @@ if st.session_state.city_graph is not None:
                 "the loaded road network."
             )
 
+        except ValueError as exc:
+            st.session_state.route_error = str(exc)
+
         except Exception:
             logger.exception("Route generation failed")
 
             st.session_state.route_error = (
-                "Route generation failed. Please check the "
-                "locations and try again."
+                "Route generation failed due to an unexpected error. "
+                "Please check the application logs."
             )
 
 
@@ -378,6 +446,13 @@ st.caption(
     "using available road-network data. They do not guarantee safety. "
     "Users should exercise personal judgment."
 )
+
+
+
+
+
+
+
 
 
     
